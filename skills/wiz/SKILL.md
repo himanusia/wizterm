@@ -1,7 +1,7 @@
 ---
 name: wiz-lan-control
 description: "Control Philips WiZ smart lights on the local network via the wiz CLI: status, on/off, brightness, presets, RGB, ambience, names, discovery, plus optional audio-reactive shows, song detection and meme effects. Use for any WiZ light request."
-version: 2.0.4
+version: 2.0.5
 category: smart-home
 ---
 
@@ -184,7 +184,7 @@ wiz live @lamp --source system     # system audio
 wiz detect [@target] --seconds 8   # identify the playing song
 wiz detect [@target] --file song.mp3
 wiz detect [@target] --apply       # identify, then start the matching show
-wiz caramelldansen [@target]       # two colours swapping on every half beat
+wiz caramelldansen [@target]       # two colours swapping once per beat, 165 BPM
 ```
 
 Capture: on macOS 14.4+ `wiz_tap.swift` is compiled once into

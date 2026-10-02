@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import sys
+import time
 import types
 import unittest
 from contextlib import redirect_stdout
@@ -23,7 +24,8 @@ def options(**overrides):
     base = {
         "bpm": 165.0,
         "fps": 15.0,
-        "rate_multiplier": 2,
+        "rate_multiplier": 1,
+        "swaps_per_beat": wiz_live.CARAMELLDANSEN_SWAPS,
         "rate": 22050,
         "block": 1024,
         "sensitivity": 1.5,
@@ -95,8 +97,8 @@ class AnalysisTests(unittest.TestCase):
 
 class EffectTests(unittest.TestCase):
     def test_caramelldansen_alternates_the_palette(self):
-        # Two swaps per beat at 165 BPM means one swap every 1 / 5.5 seconds.
-        swap = 60.0 / wiz_live.CARAMELLDANSEN_BPM / 2
+        # One swap per beat at 165 BPM, so one swap every 1 / 2.75 seconds.
+        swap = 60.0 / wiz_live.CARAMELLDANSEN_BPM
         pink = wiz_live.parse_color("ff2e88")
         cyan = wiz_live.parse_color("00e5ff")
         self.assertEqual(wiz_live.caramelldansen_frame(0.0)[0], pink)
@@ -104,8 +106,34 @@ class EffectTests(unittest.TestCase):
         self.assertEqual(wiz_live.caramelldansen_frame(swap * 2.1)[0], pink)
         self.assertEqual(wiz_live.caramelldansen_frame(swap * 3.1)[0], cyan)
 
+    def test_one_swap_per_beat_is_the_default(self):
+        beat = 60.0 / wiz_live.CARAMELLDANSEN_BPM
+        first = wiz_live.caramelldansen_frame(0.0)[0]
+        same_beat = wiz_live.caramelldansen_frame(beat * 0.9)[0]
+        next_beat = wiz_live.caramelldansen_frame(beat * 1.1)[0]
+        self.assertEqual(wiz_live.CARAMELLDANSEN_SWAPS, 1)
+        self.assertEqual(first, same_beat)
+        self.assertNotEqual(first, next_beat)
+
+    def test_swaps_per_beat_makes_it_faster(self):
+        beat = 60.0 / wiz_live.CARAMELLDANSEN_BPM
+        first = wiz_live.caramelldansen_frame(0.0, swaps_per_beat=2)[0]
+        mid_beat = wiz_live.caramelldansen_frame(beat * 0.6, swaps_per_beat=2)[0]
+        self.assertNotEqual(first, mid_beat)
+
+    def test_the_beats_survive_a_slow_light(self):
+        # The frame clock is the wall clock, so a slow bulb drops frames rather
+        # than playing the whole thing in slow motion.
+        stream = wiz_live._caramelldansen_frames(options(), [{"id": "1"}],
+                                                 [wiz_live.parse_color("ff0000"),
+                                                  wiz_live.parse_color("0000ff")])
+        first, _ = next(stream)
+        time.sleep(0.25)
+        second, _ = next(stream)
+        self.assertGreaterEqual(second - first, 0.2)
+
     def test_caramelldansen_brightness_punches_and_decays(self):
-        swap = 60.0 / wiz_live.CARAMELLDANSEN_BPM / 2
+        swap = 60.0 / wiz_live.CARAMELLDANSEN_BPM
         _rgb, at_hit = wiz_live.caramelldansen_frame(0.0)
         _rgb, midway = wiz_live.caramelldansen_frame(swap * 0.5)
         _rgb, before_next = wiz_live.caramelldansen_frame(swap * 0.9)
@@ -121,12 +149,13 @@ class EffectTests(unittest.TestCase):
             self.assertLessEqual(dimming, 100)
 
     def test_caramelldansen_respects_a_custom_bpm(self):
-        # One beat at 60 BPM is one second, so half a beat is the swap.
+        # At 60 BPM one beat is one second, so one pose per second.
         first = wiz_live.caramelldansen_frame(0.0, bpm=60.0)[0]
-        second = wiz_live.caramelldansen_frame(0.6, bpm=60.0)[0]
-        third = wiz_live.caramelldansen_frame(1.1, bpm=60.0)[0]
-        self.assertNotEqual(first, second)
-        self.assertEqual(first, third)
+        same = wiz_live.caramelldansen_frame(0.6, bpm=60.0)[0]
+        next_pose = wiz_live.caramelldansen_frame(1.1, bpm=60.0)[0]
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, next_pose)
+        self.assertEqual(first, wiz_live.caramelldansen_frame(2.1, bpm=60.0)[0])
 
     def test_caramelldansen_needs_a_palette(self):
         with self.assertRaises(ValueError):
@@ -165,7 +194,9 @@ class EffectTests(unittest.TestCase):
                                                   wiz_live.parse_color("0000ff")])
         for _ in range(4):
             frames.append(next(stream))
-        self.assertEqual([moment for moment, _ in frames], [0.0, 1 / 15.0, 2 / 15.0, 3 / 15.0])
+        moments = [moment for moment, _ in frames]
+        self.assertEqual(moments, sorted(moments))
+        self.assertGreater(moments[0], 0.0)
         # One frame per record, no more.
         self.assertTrue(all(len(payload) == 1 for _moment, payload in frames))
 

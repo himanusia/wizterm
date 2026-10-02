@@ -35,7 +35,7 @@ Optional audio-reactive shows (needs the 'live' extra, see README):
                                    whatever plays, system audio, no driver
   wiz live [target]                audio-reactive visualizer (mic, loopback or file)
   wiz detect [target]              identify the playing song and theme the lights
-  wiz caramelldansen [target]      the meme: two colours swapping on every half beat
+  wiz caramelldansen [target]      the meme: two colours swapping once per beat, 165 BPM
 
 RGB examples:
   wiz rgb ff8800 @desk
@@ -65,7 +65,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.12.4"
+VERSION = "0.12.5"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
