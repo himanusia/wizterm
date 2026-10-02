@@ -27,47 +27,6 @@ $ wiz night @desk
 WiZ devices speak a local API over UDP port 38899. Discovery and control stay
 on the same LAN as the lights; nothing is sent to a cloud service.
 
-## How it works
-
-A `wiz` command is one local process: it keeps identity state in a small
-registry file and speaks the WiZ local protocol (JSON over UDP port 38899)
-directly to the bulbs. There is no cloud service, bridge, or account anywhere
-in the path.
-
-### Control path
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor You
-    participant wiz as wiz CLI
-    participant reg as lights.json registry
-    participant bulb as WiZ bulb (UDP 38899)
-
-    You->>wiz: wiz night @desk
-    wiz->>reg: resolve @desk
-    reg-->>wiz: id, ip, stable uid
-    wiz->>bulb: setPilot (JSON datagram)
-    bulb-->>wiz: getPilot state readback
-    wiz-->>You: prints the resulting state
-    Note over wiz,bulb: LAN only: no cloud, no bridge, no account
-```
-
-### Discovery and identity
-
-```mermaid
-flowchart TD
-    A(["wiz / wiz find"]) -->|"UDP broadcast:<br/>registration probe"| B["WiZ devices answer<br/>with IP and MAC"]
-    B --> C{"MAC included?"}
-    C -->|"yes"| D["stable uid: mac:..."]
-    C -->|"no"| E["ask getSystemConfig;<br/>otherwise the IP is the identity"]
-    E --> D
-    D --> F[("registry entry<br/>id · name · uid · ip · kind")]
-    F --> G{"light appears at<br/>a different IP later?"}
-    G -->|"same MAC"| H["same light, same id:<br/>no duplicate"]
-    G -->|"different MAC<br/>at the old IP"| I["old record goes offline;<br/>the new device gets a new id"]
-```
-
 ## Install
 
 ### With your AI agent (recommended)
@@ -98,6 +57,41 @@ curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz.py -o ~/
 
 Make sure `~/.local/bin` is on your `PATH`.
 
+**Windows**: install Python first if needed (`winget install Python.Python.3`),
+then save `wiz.py` anywhere and run `python wiz.py <command>`. Allow the
+firewall prompt on first run.
+
+### Optional: audio shows
+
+The core CLI is one file and needs nothing else. The audio-reactive shows need
+`numpy` and `sounddevice`, plus `shazamio` if you want song identification.
+
+```sh
+pipx install "wizterm[live]"                 # visualizer only
+pipx install "wizterm[live,recognize]"       # plus song identification
+```
+
+With the curl install, drop the two extra files next to the `wiz` script and
+put the Python extras wherever you like:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_live.py \
+  -o ~/.local/bin/wiz_live.py
+curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_tap.swift \
+  -o ~/.local/bin/wiz_tap.swift     # macOS system audio capture
+```
+
+If the interpreter running `wiz` has no numpy, put the extras in
+`~/.config/wiz/venv` and the live commands will re-exec into it automatically:
+
+```sh
+uv venv ~/.config/wiz/venv && uv pip install --python ~/.config/wiz/venv/bin/python \
+  numpy sounddevice shazamio
+```
+
+On macOS the first run may ask for "System Audio Recording" permission for your
+terminal. Skip all of this if you only want the control commands.
+
 ### Updating
 
 ```sh
@@ -127,10 +121,6 @@ is the active Hermes skill under `HERMES_HOME`; the other global targets are:
 Use `--harness all` to update all four global targets explicitly. The updater
 does not overwrite project-local skill copies or other Hermes profiles. Reload
 the relevant harness session after a skill update. Use `--check` to avoid writes.
-
-**Windows**: install Python first if needed (`winget install Python.Python.3`),
-then save `wiz.py` anywhere and run `python wiz.py <command>`. Allow the
-firewall prompt on first run.
 
 ## Usage
 
@@ -235,40 +225,7 @@ wiz find --include-forgotten  # discover and re-adopt forgotten lights
 Forgotten devices are ignored by normal automatic discovery. Re-adopting one
 creates a new local numeric ID; its old ID is not reused.
 
-## State and migration
-
-The registry is stored at `~/.config/wiz/lights.json`. The CLI migrates
-the earlier format containing only `ip` and `name` entries the first time it
-writes the file. The v2 shape contains a numeric `id`, a stable WiZ `uid` when
-the device reports its MAC, the current `ip`, and the local `name`.
-
-If a different MAC appears on an IP previously used by another tracked light,
-the old record is retained as offline and the new device gets a separate ID.
-This prevents a reused DHCP address from inheriting the old light's name.
-
-The numeric ID is a local handle, not a WiZ cloud/account ID. The MAC-derived
-UID is what lets discovery associate the same bulb after a DHCP address change.
-If a particular firmware does not report a MAC, the current IP is the fallback
-identity and can change with DHCP.
-
-## Using with AI agents
-
-`wiz` is deliberately agent-friendly: one command surface, plain-text output,
-meaningful exit codes, no interactivity, and no cloud calls. A ready-made agent
-skill ships at [`skills/wiz/SKILL.md`](skills/wiz/SKILL.md).
-
-## Supported hardware
-
-Any WiZ-connected bulb speaking the local API works, including:
-
-- full-color models (`rgb` supported),
-- tunable-white models (typically 2700–6500 K),
-- dimmable-only models (brightness).
-
-Commands outside a bulb's capabilities may be silently ignored by the bulb;
-where applicable, `wiz` reads the resulting state back after a write.
-
-## Live shows (optional)
+## Live shows
 
 `wiz listen` turns the bulbs into an audio-reactive visualizer that runs on its
 own. You turn it on once and forget it: it taps the machine's audio, the lights
@@ -282,49 +239,8 @@ wiz listen off          # stop and put the lights back the way they were
 ```
 
 The audio stack is deliberately kept out of the core CLI: `wiz.py` stays
-dependency-free and loads `wiz_live.py` only when you ask for a show.
-
-### Capturing the audio
-
-On macOS 14.4+ there is no loopback driver involved. `wiz_tap.swift` creates a
-Core Audio process tap (`CATapDescription` +
-`AudioHardwareCreateProcessTap`) wrapped in a private aggregate device, the
-same mechanism Atoll uses, so Spotify, a browser, or anything else is captured
-directly. The helper is compiled once into `~/.config/wiz/bin/wiz-tap`.
-
-Elsewhere, `--source system` falls back to a loopback input device: a monitor
-source on Linux, Stereo Mix or VB-Cable on Windows.
-
-macOS grants audio capture per application, so the first run may ask for
-"System Audio Recording" permission for your terminal.
-
-### Install the extras
-
-```sh
-pipx install "wizterm[live]"                 # visualizer only
-pipx install "wizterm[live,recognize]"       # plus song identification
-# or, without installing anything:
-uv run --with numpy --with sounddevice wiz_live.py live --source mic
-```
-
-`wiz_live.py` must sit next to the `wiz` script (or set `WIZ_LIVE_HOME` to the
-directory that contains it). With the curl install, drop the file next to it:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_live.py \
-  -o ~/.local/bin/wiz_live.py
-curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_tap.swift \
-  -o ~/.local/bin/wiz_tap.swift     # macOS system audio tap
-```
-
-Then `pip install numpy sounddevice shazamio` (or use the venv of your choice).
-If the interpreter running `wiz` has no numpy, put the extras in
-`~/.config/wiz/venv` and the live commands will re-exec into it automatically:
-
-```sh
-uv venv ~/.config/wiz/venv && uv pip install --python ~/.config/wiz/venv/bin/python \
-  numpy sounddevice shazamio
-```
+dependency-free and loads `wiz_live.py` only when you ask for a show. See
+[Optional: audio shows](#optional-audio-shows) for the install.
 
 ### Commands
 
@@ -352,10 +268,12 @@ wiz caramelldansen @lamp --dry-run         # print frames, send nothing
 | `strobe` | white flash on every detected beat |
 | `spectrum` | colour hint plus an aggressive brightness pulse |
 | `multi` | one frequency band per light, for two or more bulbs |
-| `caramelldansen` | two colours swapping once per beat, 165 BPM |
+| `caramelldansen` | full brightness, one colour swap per beat at 165 BPM |
 
-Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
-`--brightness-boost`, `--duration`, `--dry-run`, `--list-devices`.
+Useful flags: `--fps` (frames sent per second, default 12),
+`--sensitivity`, `--brightness-boost`, `--duration`, `--dry-run`,
+`--list-devices`. `wiz caramelldansen` adds `--bpm`, `--colors`, and
+`--swaps-per-beat` (1 is the meme, 2 is a strobe).
 
 ### Audio sources
 
@@ -363,10 +281,10 @@ Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
 - `file`: decode any ffmpeg-readable file, so a demo looks the same every time.
   Use `--file song.mp3`, which implies this source; the path may also be given
   in the target slot (`wiz live --source file song.mp3`).
-- `system`: capture what the machine is playing. On macOS 14.4+ this uses the
-  bundled Core Audio process tap, so no driver is needed; elsewhere it needs a
-  loopback input device (a monitor source on Linux, Stereo Mix or VB-Cable on
-  Windows). This is the source `wiz listen` uses.
+- `system`: capture what the machine is playing. On macOS 14.4+ this uses a
+  bundled Core Audio process tap (`wiz_tap.swift`), so no loopback driver is
+  needed; elsewhere it needs one (a monitor source on Linux, Stereo Mix or
+  VB-Cable on Windows). This is the source `wiz listen` uses.
 
 ### Detecting the song
 
@@ -384,6 +302,80 @@ Caramelldansen goes straight to `wiz caramelldansen`.
 - Before a show starts, `wiz live` snapshots each light and restores that state
   when the show stops, including on Ctrl-C. `--dry-run` sends no UDP at all.
 - Everything is LAN-only, exactly like the control commands.
+
+## State and migration
+
+The registry is stored at `~/.config/wiz/lights.json`. The CLI migrates
+the earlier format containing only `ip` and `name` entries the first time it
+writes the file. The v2 shape contains a numeric `id`, a stable WiZ `uid` when
+the device reports its MAC, the current `ip`, and the local `name`.
+
+If a different MAC appears on an IP previously used by another tracked light,
+the old record is retained as offline and the new device gets a separate ID.
+This prevents a reused DHCP address from inheriting the old light's name.
+
+The numeric ID is a local handle, not a WiZ cloud/account ID. The MAC-derived
+UID is what lets discovery associate the same bulb after a DHCP address change.
+If a particular firmware does not report a MAC, the current IP is the fallback
+identity and can change with DHCP.
+
+## Supported hardware
+
+Any WiZ-connected bulb speaking the local API works, including:
+
+- full-color models (`rgb` supported),
+- tunable-white models (typically 2700–6500 K),
+- dimmable-only models (brightness).
+
+Commands outside a bulb's capabilities may be silently ignored by the bulb;
+where applicable, `wiz` reads the resulting state back after a write.
+
+## Using with AI agents
+
+`wiz` is deliberately agent-friendly: one command surface, plain-text output,
+meaningful exit codes, no interactivity, and no cloud calls. A ready-made agent
+skill ships at [`skills/wiz/SKILL.md`](skills/wiz/SKILL.md).
+
+## How it works
+
+A `wiz` command is one local process: it keeps identity state in a small
+registry file and speaks the WiZ local protocol (JSON over UDP port 38899)
+directly to the bulbs. There is no cloud service, bridge, or account anywhere
+in the path.
+
+### Control path
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant wiz as wiz CLI
+    participant reg as lights.json registry
+    participant bulb as WiZ bulb (UDP 38899)
+
+    You->>wiz: wiz night @desk
+    wiz->>reg: resolve @desk
+    reg-->>wiz: id, ip, stable uid
+    wiz->>bulb: setPilot (JSON datagram)
+    bulb-->>wiz: getPilot state readback
+    wiz-->>You: prints the resulting state
+    Note over wiz,bulb: LAN only: no cloud, no bridge, no account
+```
+
+### Discovery and identity
+
+```mermaid
+flowchart TD
+    A(["wiz / wiz find"]) -->|"UDP broadcast:<br/>registration probe"| B["WiZ devices answer<br/>with IP and MAC"]
+    B --> C{"MAC included?"}
+    C -->|"yes"| D["stable uid: mac:..."]
+    C -->|"no"| E["ask getSystemConfig;<br/>otherwise the IP is the identity"]
+    E --> D
+    D --> F[("registry entry<br/>id · name · uid · ip · kind")]
+    F --> G{"light appears at<br/>a different IP later?"}
+    G -->|"same MAC"| H["same light, same id:<br/>no duplicate"]
+    G -->|"different MAC<br/>at the old IP"| I["old record goes offline;<br/>the new device gets a new id"]
+```
 
 ## Protocol and security
 
