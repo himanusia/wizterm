@@ -5,10 +5,12 @@ the numpy-backed analysis path is exercised only when numpy is installed.
 """
 import io
 import os
+import shutil
 import sys
 import types
 import unittest
 from contextlib import redirect_stdout
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -212,6 +214,39 @@ class DispatcherTests(unittest.TestCase):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_live_interpreter_is_none_without_a_venv(self):
+        with patch.object(wiz, "LIVE_VENV_PYTHONS", ()):
+            self.assertIsNone(wiz._live_interpreter())
+
+    def test_live_interpreter_returns_the_venv_python(self):
+        with TemporaryDirectory() as tmp:
+            python = os.path.join(tmp, "bin", "python")
+            os.makedirs(os.path.dirname(python))
+            with open(python, "w") as handle:
+                handle.write("")
+            with patch.object(wiz, "LIVE_VENV_PYTHONS", (python,)):
+                self.assertEqual(wiz._live_interpreter(), python)
+
+    def test_module_importable_matches_reality(self):
+        self.assertTrue(wiz._module_importable("json"))
+        self.assertFalse(wiz._module_importable("definitely_not_a_module"))
+
+    def test_sibling_core_loads_the_installed_script_name(self):
+        # The installed command is `wiz` with no .py suffix; the loader must
+        # still find and execute it.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with TemporaryDirectory() as tmp:
+            shutil.copyfile(os.path.join(root, "wiz.py"), os.path.join(tmp, "wiz"))
+            with patch.object(wiz_live, "__file__", os.path.join(tmp, "wiz_live.py")):
+                module = wiz_live._load_sibling_core()
+                self.assertTrue(hasattr(module, "VERSION"))
+
+    def test_sibling_core_reports_a_missing_core(self):
+        with TemporaryDirectory() as tmp:
+            with patch.object(wiz_live, "__file__", os.path.join(tmp, "wiz_live.py")):
+                with self.assertRaises(wiz_live.MissingExtra):
+                    wiz_live._load_sibling_core()
+
     def test_versions_agree(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as handle:

@@ -99,12 +99,31 @@ def core():
     if CORE is None:
         try:
             import wiz as CORE_MODULE  # noqa: N813 - deliberate late import
-        except ImportError as exc:  # pragma: no cover - install-time problem
-            raise MissingExtra(
-                "the core wiz module was not found next to wiz_live.py (%s)" % exc
-            )
-        CORE = CORE_MODULE
+        except ImportError:
+            CORE = _load_sibling_core()
+        else:
+            CORE = CORE_MODULE
     return CORE
+
+
+def _load_sibling_core():
+    """Load the installed ``wiz`` script, which may have no ``.py`` suffix."""
+    import importlib.machinery
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("wiz.py", "wiz"):
+        path = os.path.join(here, name)
+        if not os.path.isfile(path):
+            continue
+        # An extensionless script has no inferred loader, so name one.
+        loader = importlib.machinery.SourceFileLoader("wiz", path)
+        spec = importlib.util.spec_from_file_location("wiz", path, loader=loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+    raise MissingExtra(
+        "the core wiz module was not found next to wiz_live.py in %s" % here
+    )
 
 
 def require(module_name, feature, extra):
@@ -556,6 +575,15 @@ def cmd_live(argv):
         for index, device in enumerate(list_input_devices()):
             print("[%2d] in=%-2s %s" % (index, device.get("max_input_channels"), device["name"]))
         return 0
+    # `--file` is the interesting part of `--source file`, so let it imply the
+    # source, and accept the path in the target slot for the shorthand form
+    # `wiz live --source file song.mp3`.
+    if options.file and options.source != "file":
+        options.source = "file"
+    if options.source == "file" and not options.file and options.target \
+            and os.path.isfile(options.target):
+        options.file = options.target
+        options.target = None
     mode = options.mode
     if mode == "caramelldansen":
         forwarded = []
@@ -580,7 +608,8 @@ def cmd_live(argv):
         print("dry run: no UDP is sent")
     if options.source == "file":
         if not options.file:
-            print("wiz live: --source file needs --file PATH")
+            print("wiz live: --source file needs a path, e.g. "
+                  "wiz live @lamp --file song.mp3")
             return 1
         blocks = file_blocks(options.file, options.rate, options.block)
     else:
@@ -723,7 +752,8 @@ def _live_parser():
     _add_common(parser)
     parser.add_argument("--mode", "-m", default=DEFAULT_MODE, choices=sorted(SHOW_MODES))
     parser.add_argument("--source", "-s", default="mic", choices=MICS)
-    parser.add_argument("--file", "-f", default=None, help="audio file for --source file")
+    parser.add_argument("--file", "-f", default=None, metavar="PATH",
+                        help="decode an audio file; implies --source file")
     parser.add_argument("--device", "-d", type=int, default=None,
                         help="input device index (see --list-devices)")
     parser.add_argument("--list-devices", action="store_true")

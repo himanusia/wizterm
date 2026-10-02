@@ -296,7 +296,7 @@ Then `pip install numpy sounddevice shazamio` (or use the venv of your choice).
 wiz shows                                  # list modes
 wiz live                                   # microphone, default mode
 wiz live @lamp --mode spectrum             # one light, punchier mode
-wiz live @lamp --source file song.mp3      # repeatable, perfectly synced demo
+wiz live @lamp --file song.mp3             # repeatable, perfectly synced demo
 wiz live @lamp --source system             # system audio (loopback device)
 wiz detect --seconds 8                     # identify the song playing
 wiz detect --apply                         # identify, then start its show
@@ -324,6 +324,8 @@ Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
 
 - `mic` (default): the machine microphone; works everywhere.
 - `file`: decode any ffmpeg-readable file, so a demo looks the same every time.
+  Use `--file song.mp3`, which implies this source; the path may also be given
+  in the target slot (`wiz live --source file song.mp3`).
 - `system`: capture what the machine is playing. On macOS this needs a
   loopback driver (BlackHole, Loopback, ...) routed as an input device; on
   Linux use a monitor source; on Windows use Stereo Mix or VB-Cable.

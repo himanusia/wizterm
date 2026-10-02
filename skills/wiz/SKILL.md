@@ -163,7 +163,7 @@ Audio-reactive shows are optional: `wiz.py` stays dependency-free and imports
 wiz shows                          # list modes (no audio needed)
 wiz live [@target]                 # microphone, default 'bands' mode
 wiz live @lamp --mode spectrum     # bands|energy|rainbow|pulse|strobe|spectrum|multi
-wiz live @lamp --source file song.mp3   # repeatable, perfectly synced demo
+wiz live @lamp --file song.mp3          # repeatable, perfectly synced demo
 wiz live @lamp --source system     # system audio via a loopback input device
 wiz detect [@target] --seconds 8   # identify the playing song
 wiz detect [@target] --file song.mp3

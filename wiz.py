@@ -1385,6 +1385,31 @@ def cmd_control(state, cmd, args, target):
 LIVE_COMMANDS = ("shows", "live", "visualize", "visualise", "caramelldansen",
                  "detect", "listen")
 
+# Subset that needs numpy/sounddevice/shazamio at run time.
+LIVE_AUDIO_COMMANDS = ("live", "visualize", "visualise", "detect", "listen")
+
+# Optional venv that carries the audio extras, so the live commands work even
+# when the interpreter running this script is a bare system python.
+LIVE_VENV_PYTHONS = (
+    os.path.join(CONF_DIR, "venv", "bin", "python"),
+    os.path.join(CONF_DIR, "venv", "Scripts", "python.exe"),
+)
+
+
+def _module_importable(name):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _live_interpreter():
+    for candidate in LIVE_VENV_PYTHONS:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
 
 def dispatch_live(argv):
     """Hand a live command to the optional wiz_live module."""
@@ -1403,6 +1428,16 @@ def dispatch_live(argv):
             "  install: pip install \"wizterm[live,recognize]\"\n"
             "  docs:    %s#live-shows" % (argv[0], exc, REPOSITORY_URL)
         )
+    interpreter = _live_interpreter()
+    if (argv[0] in LIVE_AUDIO_COMMANDS and interpreter
+            and not _module_importable("numpy")):
+        # Re-run the show under the dedicated venv instead of failing later.
+        command = [interpreter, wiz_live.__file__] + list(argv)
+        try:
+            os.execv(interpreter, command)
+        except OSError:
+            import subprocess
+            sys.exit(subprocess.run(command).returncode)
     wiz_live.CORE = sys.modules[__name__]
     return wiz_live.main(argv)
 
