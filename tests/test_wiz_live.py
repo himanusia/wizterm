@@ -213,7 +213,64 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+class RestoreParamsTests(unittest.TestCase):
+    def test_off_light_needs_only_state(self):
+        self.assertEqual(wiz_live.restore_params({"state": False, "dimming": 100,
+                                                  "temp": 2700, "sceneId": 11}),
+                         [{"state": False}])
+
+    def test_missing_snapshot_turns_the_light_off(self):
+        self.assertEqual(wiz_live.restore_params({}), [{"state": False}])
+        self.assertEqual(wiz_live.restore_params(None), [{"state": False}])
+
+    def test_scene_snapshot_never_mixes_modes(self):
+        candidates = wiz_live.restore_params(
+            {"state": True, "dimming": 60, "sceneId": 4, "temp": 2700,
+             "r": 10, "g": 20, "b": 30})
+        first = candidates[0]
+        self.assertEqual(first["sceneId"], 4)
+        self.assertEqual(first["dimming"], 60)
+        self.assertNotIn("r", first)
+        self.assertNotIn("temp", first)
+
+    def test_colour_snapshot_restores_rgb(self):
+        first = wiz_live.restore_params({"state": True, "dimming": 80,
+                                         "r": 255, "g": 0, "b": 128})[0]
+        self.assertEqual((first["r"], first["g"], first["b"]), (255, 0, 128))
+        self.assertNotIn("sceneId", first)
+        self.assertNotIn("temp", first)
+
+    def test_temperature_snapshot_restores_temp(self):
+        first = wiz_live.restore_params({"state": True, "temp": 4000})[0]
+        self.assertEqual(first["temp"], 4000)
+        self.assertNotIn("sceneId", first)
+
+    def test_out_of_range_dimming_is_dropped(self):
+        self.assertNotIn("dimming", wiz_live.restore_params(
+            {"state": True, "dimming": 500, "temp": 2700})[0])
+        self.assertNotIn("dimming", wiz_live.restore_params(
+            {"state": True, "dimming": 2, "temp": 2700})[0])
+
+    def test_every_candidate_is_a_coherent_single_mode(self):
+        pilots = [{"state": True, "sceneId": 4, "r": 1, "g": 2, "b": 3},
+                  {"state": True, "r": 1, "g": 2, "b": 3, "temp": 3000},
+                  {"state": True, "sceneId": 9, "temp": 3000},
+                  {"state": True}]
+        for pilot in pilots:
+            for params in wiz_live.restore_params(pilot):
+                modes = [key for key in ("sceneId", "temp") if key in params]
+                modes += ["rgb"] if any(key in params for key in ("r", "g", "b")) else []
+                self.assertLessEqual(len(modes), 1, (pilot, params))
+
+    def test_probe_resets_after_a_successful_wait(self):
+        wiz_live.PROBED.clear()
+        wiz_live.PROBED.add("192.0.2.9")
+        self.assertIn("192.0.2.9", wiz_live.PROBED)
+        wiz_live.PROBED.clear()
+
+
 class DownmixTests(unittest.TestCase):
+
     def test_mono_passes_through(self):
         import array
         samples = array.array("f", [0.5, -0.25, 1.0])
@@ -328,6 +385,21 @@ class ListenTests(unittest.TestCase):
 
 
 class SongWatcherTests(unittest.TestCase):
+    def test_buffer_is_sized_from_the_starting_rate(self):
+        # Regression: seeding limit=1 kept a single sample, so every
+        # identification compared one sample against Shazam.
+        watcher = wiz_live.SongWatcher(rate=48000)
+        self.assertEqual(watcher.limit, int(wiz_live.LISTEN_SAMPLE * 48000))
+        watcher.feed([0.5] * 4096, 48000)
+        self.assertEqual(len(watcher.buffer), 4096)
+
+    def test_buffer_keeps_only_the_last_window(self):
+        watcher = wiz_live.SongWatcher(rate=100, sample=1.0)
+        watcher.feed([0.1] * 80, 100)
+        watcher.feed([0.2] * 80, 100)
+        self.assertEqual(len(watcher.buffer), 100)
+        self.assertEqual(watcher.buffer[-1], 0.2)
+
     def test_stays_quiet_without_audio(self):
         watcher = wiz_live.SongWatcher(rate=48000)
         watcher.armed -= 60

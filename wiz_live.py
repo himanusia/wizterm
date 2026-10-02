@@ -44,6 +44,7 @@ import math
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -51,7 +52,7 @@ import threading
 import time
 import wave
 
-LIVE_VERSION = "0.2.0"
+LIVE_VERSION = "0.2.1"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
@@ -580,12 +581,34 @@ def hint_for_kind(record):
     return ""
 
 
+# Lights already probed with a blocking setPilot, so a dead bulb is reported
+# once and streaming frames can skip the ~350 ms acknowledgement wait.
+PROBED = set()
+
+
 def send_frame(record, rgb, dimming, tolerate_failure=True):
     wiz = core()
+    ip = record.get("ip")
+    if not ip:
+        return False
     params = {"state": True, "r": rgb[0], "g": rgb[1], "b": rgb[2],
               "dimming": int(clamp(dimming, 10, 100))}
+    # A WiZ bulb needs roughly 350 ms to acknowledge a colour change and
+    # getPilot is answered in ~25 ms, so waiting for the setPilot reply would
+    # throttle a show to about 3 frames per second. Probe a light once so an
+    # offline bulb is still reported, then stream fire-and-forget.
+    wait = ip not in PROBED
     try:
-        wiz.set_pilot(record["ip"], params)
+        if wait:
+            wiz.set_pilot(ip, params)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.sendto(json.dumps({"method": "setPilot", "params": params}).encode(),
+                            (ip, wiz.PORT))
+            finally:
+                sock.close()
+        PROBED.add(ip)
         return True
     except (OSError, ValueError) as exc:
         if not tolerate_failure:
@@ -594,19 +617,52 @@ def send_frame(record, rgb, dimming, tolerate_failure=True):
         return False
 
 
+def restore_params(pilot):
+    """Coherent setPilot candidates that recreate a snapshot, safest first.
+
+    A bulb rejects a single command that mixes conflicting modes, for example
+    ``sceneId`` together with ``r/g/b`` and ``temp``, so send exactly one of
+    them. A light that was off keeps its colour while dark, so state alone is
+    enough there.
+    """
+    if not pilot:
+        return [{"state": False}]
+    state = bool(pilot.get("state", True))
+    if not state:
+        return [{"state": False}]
+    base = {"state": True}
+    dimming = pilot.get("dimming")
+    if isinstance(dimming, int) and 10 <= dimming <= 100:
+        base["dimming"] = dimming
+    if pilot.get("sceneId"):
+        primary = dict(base)
+        primary["sceneId"] = int(pilot["sceneId"])
+        return [primary, base]
+    if any(key in pilot for key in ("r", "g", "b")):
+        primary = dict(base)
+        primary.update({key: int(pilot.get(key, 0)) for key in ("r", "g", "b")})
+        return [primary, base]
+    if pilot.get("temp"):
+        primary = dict(base)
+        primary["temp"] = pilot["temp"]
+        return [primary, base]
+    return [base]
+
+
 def restore(records):
     """Return each light to the state it had before a show."""
     wiz = core()
     for record, pilot in records:
-        params = {"state": bool(pilot.get("state", True))}
-        for key in ("dimming", "temp", "r", "g", "b", "sceneId"):
-            if key in pilot:
-                params[key] = pilot[key]
-        try:
-            wiz.set_pilot(record["ip"], params)
-            print("  restored %s" % wiz._record_prefix(record))
-        except (OSError, ValueError):
-            print("  could not restore %s" % wiz._record_prefix(record))
+        last_error = None
+        for params in restore_params(pilot):
+            try:
+                wiz.set_pilot(record["ip"], params)
+                print("  restored %s" % wiz._record_prefix(record))
+                break
+            except (OSError, ValueError, RuntimeError) as exc:
+                last_error = exc
+        else:
+            print("  could not restore %s (%s)" % (wiz._record_prefix(record), last_error))
 
 
 def snapshot(records):
@@ -931,6 +987,7 @@ LISTEN_LOG = os.path.join(WIZ_HOME, "listen.log")
 # Everything below is automatic: `wiz listen on` is the whole configuration.
 LISTEN_MODE = "spectrum"       # colour hint plus a brightness pulse, reads best
 LISTEN_FPS = 12.0
+LISTEN_BLOCK = 2048            # window size: finer bass resolution than 1024
 LISTEN_SPEED = 1.4             # brightness boost, tuned for a lit room
 LISTEN_INTERVAL = 25.0         # seconds between song identifications
 LISTEN_FIRST_INTERVAL = 10.0   # identify sooner on the first track
@@ -1032,7 +1089,9 @@ class SongWatcher:
         self.rate = rate
         self.interval = interval
         self.sample = sample
-        self.limit = 1
+        # Size the ring from the starting rate too: it is only recomputed when
+        # the rate *changes*, so seeding it wrong would keep one sample.
+        self.limit = max(1, int(sample * rate)) if rate else 1
         self.buffer = []
         self.thread = None
         self.result = None
@@ -1073,6 +1132,9 @@ class SongWatcher:
         self.thread.start()
 
     def _identify(self, audio):
+        seconds = len(audio) / self.rate if self.rate else 0.0
+        peak = max((abs(value) for value in audio), default=0.0)
+        listen_log("identifying %.1fs of audio (peak %.2f)" % (seconds, peak))
         try:
             title, artist = identify_samples(audio, self.rate)
         except (MissingExtra, OSError, ValueError) as exc:
@@ -1132,7 +1194,7 @@ def identify_samples(samples, rate):
 def listen_loop(records, stop):
     """The whole show: tap the system audio, drive the lights, name the song."""
     options = argparse.Namespace(
-        rate=DEFAULT_RATE, block=DEFAULT_BLOCK, sensitivity=1.5,
+        rate=DEFAULT_RATE, block=LISTEN_BLOCK, sensitivity=1.5,
         brightness_boost=LISTEN_SPEED, fps=LISTEN_FPS, duration=None,
         dry_run=False, source="system", file=None, device=None, target=None)
     tap = SystemTap(processes=LISTEN_PROCESSES, block=options.block)
@@ -1147,12 +1209,14 @@ def listen_loop(records, stop):
     mode = LISTEN_MODE
     interval = 1.0 / max(LISTEN_FPS, 1.0)
     last_sent = {}
-    chapter = 0
-    started = time.monotonic()
+    next_send = time.monotonic()
     try:
         for block in tap.blocks():
             if stop["now"]:
                 break
+            # Every block is analysed and buffered: the tap drops audio when the
+            # reader falls behind, and a gappy buffer never matches a song. Only
+            # the UDP write is rate limited, never the read.
             if not analyser.feed(block):
                 continue
             watcher.feed(block, options.rate)
@@ -1161,16 +1225,16 @@ def listen_loop(records, stop):
             if switched and switched != mode:
                 mode = switched
                 listen_log("switching to the '%s' show" % mode)
+            now = time.monotonic()
+            if now < next_send:
+                continue
+            next_send = now + interval
             for index, record in enumerate(records):
                 frame = analyser.frame(mode, index)
                 if last_sent.get(record.get("id")) == frame:
                     continue
                 if send_frame(record, frame[0], frame[1]):
                     last_sent[record.get("id")] = frame
-            chapter += 1
-            owed = started + chapter * interval - time.monotonic()
-            if owed > 0:
-                time.sleep(owed)
     finally:
         tap.stop()
 
@@ -1207,7 +1271,10 @@ def cmd_listen_daemon(_argv=None):
     except KeyboardInterrupt:
         pass
     finally:
-        restore(saved)
+        try:
+            restore(saved)
+        except Exception as exc:  # never let cleanup hide the real exit reason
+            listen_log("restore failed: %s" % exc)
         write_state(pid=None, song=None)
         listen_log("listening stopped, lights restored")
     return 0
