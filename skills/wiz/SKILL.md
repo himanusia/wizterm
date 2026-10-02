@@ -1,14 +1,15 @@
 ---
 name: wiz-lan-control
-description: "Control Philips WiZ smart lights on the local network via the wiz CLI. Use when the user asks about WiZ lights, status, on/off, brightness, presets, RGB, ambience, scenes, names, IDs, or forgetting a device."
-version: 1.8.0
+description: "Control Philips WiZ smart lights on the local network via the wiz CLI: status, on/off, brightness, presets, RGB, ambience, names, discovery, plus optional audio-reactive shows, song detection and meme effects. Use for any WiZ light request."
+version: 1.9.0
 category: smart-home
 ---
 
 # WiZ Light Control
 
-Agent skill for `wiz` 0.10.0, a single-file Python CLI speaking the WiZ Local
-API: JSON over UDP port 38899, LAN-only, no cloud, no dependencies.
+Agent skill for `wiz` 0.11.0, a single-file Python CLI speaking the WiZ Local
+API: JSON over UDP port 38899, LAN-only, no cloud, no dependencies. Audio
+shows live in the optional `wiz_live.py` module and are loaded only on demand.
 
 ## Prerequisite check
 
@@ -152,6 +153,48 @@ wiz find --include-forgotten  # re-adopt forgotten devices
 `forget` only removes a device from this CLI and adds it to the ignored list. It
 does not reset the physical bulb or remove it from the official WiZ app. A
 re-adopted device receives a new local numeric ID; old IDs are never reused.
+
+## Live audio shows (optional)
+
+Audio-reactive shows are optional: `wiz.py` stays dependency-free and imports
+`wiz_live.py` only for these words as the first argument:
+
+```bash
+wiz shows                          # list modes (no audio needed)
+wiz live [@target]                 # microphone, default 'bands' mode
+wiz live @lamp --mode spectrum     # bands|energy|rainbow|pulse|strobe|spectrum|multi
+wiz live @lamp --source file song.mp3   # repeatable, perfectly synced demo
+wiz live @lamp --source system     # system audio via a loopback input device
+wiz detect [@target] --seconds 8   # identify the playing song
+wiz detect [@target] --file song.mp3
+wiz detect [@target] --apply       # identify, then start the matching show
+wiz caramelldansen [@target]       # two colours swapping on every half beat
+```
+
+Useful flags: `--fps` (default 12; keep at or below ~15), `--sensitivity`,
+`--brightness-boost`, `--duration`, `--dry-run` (prints frames, sends no UDP),
+`--list-devices`.
+
+Extras: `numpy` + `sounddevice` for capture and FFT, `shazamio` for song
+identification. Install with `pipx install "wizterm[live,recognize]"`, or run
+ad-hoc with `uv run --with numpy --with sounddevice wiz_live.py`. Without them
+the CLI prints the exact install line instead of failing obscurely.
+
+`wiz_live.py` must sit next to the installed `wiz` script, or `WIZ_LIVE_HOME`
+must point at its directory. A curl install of `wiz.py` alone does not include
+it; fetch `wiz_live.py` too.
+
+Etiquette:
+
+- Snapshot before a show and restore afterwards. `wiz live` and
+  `wiz caramelldansen` do this themselves, including on Ctrl-C; only use
+  `--dry-run` or an explicit duration for scripted/live tests.
+- RGB modes do nothing on tunable-white or dimmable-only bulbs; check `wiz list`
+  for the device kind first. The CLI prints a warning for those targets.
+- Stay under ~15 frames per second and avoid resending identical frames. The
+  renderer already skips unchanged frames.
+- `wiz detect` sends a short audio fingerprint to Shazam. Say so before running
+  it, and prefer `--file` when the user cares about what leaves the machine.
 
 ## Behavior rules
 

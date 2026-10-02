@@ -153,6 +153,10 @@ wiz scene <id|name>         alias for ambience
 wiz rename <name> [target]  assign a friendly name
 wiz forget [target]         remove light(s) from this CLI registry
 wiz add <ip>                manually register a light by IP
+wiz shows                   list the optional audio-reactive shows
+wiz live [target]           audio-reactive visualizer (needs the live extra)
+wiz detect [target]         identify the playing song (needs the recognize extra)
+wiz caramelldansen [target] the meme: two colours swapping on every half beat
 ```
 
 ### Targeting one light
@@ -261,6 +265,86 @@ Any WiZ-connected bulb speaking the local API works, including:
 Commands outside a bulb's capabilities may be silently ignored by the bulb;
 where applicable, `wiz` reads the resulting state back after a write.
 
+## Live shows (optional)
+
+`wiz live` turns the bulbs into an audio-reactive visualizer. The audio stack
+is deliberately kept out of the core CLI: `wiz.py` stays dependency-free and
+loads `wiz_live.py` only when you ask for a show.
+
+### Install the extras
+
+```sh
+pipx install "wizterm[live]"                 # visualizer only
+pipx install "wizterm[live,recognize]"       # plus song identification
+# or, without installing anything:
+uv run --with numpy --with sounddevice wiz_live.py live --source mic
+```
+
+`wiz_live.py` must sit next to the `wiz` script (or set `WIZ_LIVE_HOME` to the
+directory that contains it). With the curl install, drop the file next to it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_live.py \
+  -o ~/.local/bin/wiz_live.py
+```
+
+Then `pip install numpy sounddevice shazamio` (or use the venv of your choice).
+
+### Commands
+
+```sh
+wiz shows                                  # list modes
+wiz live                                   # microphone, default mode
+wiz live @lamp --mode spectrum             # one light, punchier mode
+wiz live @lamp --source file song.mp3      # repeatable, perfectly synced demo
+wiz live @lamp --source system             # system audio (loopback device)
+wiz detect --seconds 8                     # identify the song playing
+wiz detect --apply                         # identify, then start its show
+wiz caramelldansen @lamp                   # the meme, 165 BPM
+wiz caramelldansen @lamp --dry-run         # print frames, send nothing
+```
+
+### Modes
+
+| Mode | Behaviour |
+|---|---|
+| `bands` | bass to red, mid to green, treble to blue (default) |
+| `energy` | warm colour when loud, cool when quiet |
+| `rainbow` | hue follows the dominant band |
+| `pulse` | fixed warm colour, brightness follows the music |
+| `strobe` | white flash on every detected beat |
+| `spectrum` | colour hint plus an aggressive brightness pulse |
+| `multi` | one frequency band per light, for two or more bulbs |
+| `caramelldansen` | two colours swapping on every half beat |
+
+Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
+`--brightness-boost`, `--duration`, `--dry-run`, `--list-devices`.
+
+### Audio sources
+
+- `mic` (default): the machine microphone; works everywhere.
+- `file`: decode any ffmpeg-readable file, so a demo looks the same every time.
+- `system`: capture what the machine is playing. On macOS this needs a
+  loopback driver (BlackHole, Loopback, ...) routed as an input device; on
+  Linux use a monitor source; on Windows use Stereo Mix or VB-Cable.
+
+### Detecting the song
+
+`wiz detect` records a few seconds (or reads `--file`), asks Shazam what is
+playing, prints the match, and with `--apply` starts the show that matches.
+Known meme titles in `KNOWN_MEMES` auto-select their show, so a recognised
+Caramelldansen goes straight to `wiz caramelldansen`.
+
+### Etiquette and limits
+
+- Bulbs accept a limited update rate. Keep `--fps` at or below ~15 and avoid
+  sending unchanged frames; `wiz live` skips identical frames automatically.
+- RGB modes do nothing on tunable-white or dimmable-only bulbs; `wiz live`
+  prints a note for those targets in advance.
+- Before a show starts, `wiz live` snapshots each light and restores that state
+  when the show stops, including on Ctrl-C. `--dry-run` sends no UDP at all.
+- Everything is LAN-only, exactly like the control commands.
+
 ## Protocol and security
 
 The WiZ Local API is undocumented but widely implemented: JSON datagrams over
@@ -281,7 +365,8 @@ internet-facing service.
 
 Implemented here: local discovery, registry IDs/names, on/off, brightness,
 color temperature, RGB, named lighting/color presets, known ambience/scene
-activation, and safe forgetting/re-adoption.
+activation, safe forgetting/re-adoption, and optional audio-reactive shows
+(`wiz live`, `wiz detect`, `wiz caramelldansen`) in a separate module.
 
 Not implemented here: WiZ account/cloud control, rooms/groups managed by the
 app, schedules and automations, WiZclick, custom light-mode/gradient editing,
@@ -293,7 +378,7 @@ pilot API. The official app may expose more features than this LAN CLI.
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 -m py_compile wiz.py
+python3 -m py_compile wiz.py wiz_live.py
 ```
 
 ## License

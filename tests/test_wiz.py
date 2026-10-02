@@ -10,6 +10,16 @@ from unittest.mock import patch
 import wiz
 
 
+def _ahead_of_current():
+    """A release version strictly newer than the one under test."""
+    parts = wiz.VERSION.split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return ".".join(parts)
+
+
+AHEAD_VERSION = _ahead_of_current()
+
+
 class WizRegistryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -361,8 +371,8 @@ class WizRegistryTests(unittest.TestCase):
         self.assertIn("Custom Mode 1", output.getvalue())
 
     def test_update_writes_cli_and_hermes_skill(self):
-        remote_source = 'VERSION = "0.11.0"\n'
-        remote_project = '[project]\nversion = "0.11.0"\n'
+        remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
         remote_skill = "---\nname: wiz-lan-control\nversion: 1.4.0\n---\nupdated\n"
         with TemporaryDirectory() as tmp:
             cli_path = os.path.join(tmp, "wiz")
@@ -389,8 +399,8 @@ class WizRegistryTests(unittest.TestCase):
                 self.assertEqual(handle.read(), remote_skill)
 
     def test_update_syncs_selected_non_hermes_harnesses(self):
-        remote_source = 'VERSION = "0.11.0"\n'
-        remote_project = '[project]\nversion = "0.11.0"\n'
+        remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
         remote_skill = "---\nname: wiz-lan-control\nversion: 1.5.0\n---\nportable update\n"
         with TemporaryDirectory() as tmp:
             cli_path = os.path.join(tmp, "wiz")
@@ -493,8 +503,8 @@ class WizRegistryTests(unittest.TestCase):
                 self.assertEqual(handle.read(), "old second")
 
     def test_force_does_not_downgrade_newer_skill(self):
-        remote_source = 'VERSION = "0.11.0"\n'
-        remote_project = '[project]\nversion = "0.11.0"\n'
+        remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
         remote_skill = "---\nname: wiz-lan-control\nversion: 1.0.0\n---\nold\n"
         with TemporaryDirectory() as tmp:
             cli_path = os.path.join(tmp, "wiz")
@@ -519,7 +529,7 @@ class WizRegistryTests(unittest.TestCase):
 
     def test_newer_legacy_source_without_version_is_rejected(self):
         remote_source = "print('legacy wiz source')\n"
-        remote_project = '[project]\nversion = "0.11.0"\n'
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
         remote_skill = "---\nname: wiz-lan-control\nversion: 1.5.0\n---\n"
         responses = {
             "wiz.py": remote_source,
@@ -565,8 +575,8 @@ class WizRegistryTests(unittest.TestCase):
             wiz._parse_harnesses("codex,unknown")
 
     def test_update_check_does_not_write_targets(self):
-        remote_source = 'VERSION = "0.11.0"\n'
-        remote_project = '[project]\nversion = "0.11.0"\n'
+        remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
         remote_skill = "---\nname: wiz-lan-control\nversion: 1.4.0\n---\n"
         responses = {
             "wiz.py": remote_source,
@@ -640,7 +650,7 @@ class WizRegistryTests(unittest.TestCase):
                 result = wiz.main()
 
         self.assertEqual(result, 0)
-        self.assertEqual(output.getvalue().strip(), "wiz 0.10.0")
+        self.assertEqual(output.getvalue().strip(), "wiz %s" % wiz.VERSION)
 
 
 if __name__ == "__main__":

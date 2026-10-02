@@ -29,6 +29,12 @@ Usage:
   wiz forget [target]              remove light(s) from this CLI's registry
   wiz add <ip>                     manually add a light by IP
 
+Optional audio-reactive shows (needs the 'live' extra, see README):
+  wiz shows                        list visualizer modes
+  wiz live [target]                audio-reactive visualizer (mic, loopback or file)
+  wiz detect [target]              identify the playing song and theme the lights
+  wiz caramelldansen [target]      the meme: two colours swapping on every half beat
+
 RGB examples:
   wiz rgb ff8800 @desk
   wiz rgb '#ff8800' @desk
@@ -57,7 +63,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
@@ -1373,6 +1379,34 @@ def cmd_control(state, cmd, args, target):
     return 0 if all(results) else 1
 
 
+# Optional audio-reactive shows. The core CLI never imports the audio stack;
+# the extras live in wiz_live.py and are loaded only when one of these words
+# is the first argument.
+LIVE_COMMANDS = ("shows", "live", "visualize", "visualise", "caramelldansen",
+                 "detect", "listen")
+
+
+def dispatch_live(argv):
+    """Hand a live command to the optional wiz_live module."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (here, os.path.join(CONF_DIR, "lib"),
+                      os.path.dirname(os.path.abspath(os.path.expanduser(
+                          os.environ.get("WIZ_LIVE_HOME", here))))):
+        if candidate and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+    try:
+        import wiz_live
+    except ImportError as exc:
+        sys.exit(
+            "wiz: '%s' needs the optional audio extras, and wiz_live.py was not "
+            "found next to this script (%s)\n"
+            "  install: pip install \"wizterm[live,recognize]\"\n"
+            "  docs:    %s#live-shows" % (argv[0], exc, REPOSITORY_URL)
+        )
+    wiz_live.CORE = sys.modules[__name__]
+    return wiz_live.main(argv)
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] in ("-h", "--help", "help"):
@@ -1381,6 +1415,8 @@ def main():
     if argv and argv[0] in ("-V", "--version", "version"):
         print("wiz %s" % VERSION)
         return 0
+    if argv and argv[0] in LIVE_COMMANDS:
+        return dispatch_live(argv)
 
     state = load_state()
     if not argv:
