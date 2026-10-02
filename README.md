@@ -267,9 +267,33 @@ where applicable, `wiz` reads the resulting state back after a write.
 
 ## Live shows (optional)
 
-`wiz live` turns the bulbs into an audio-reactive visualizer. The audio stack
-is deliberately kept out of the core CLI: `wiz.py` stays dependency-free and
-loads `wiz_live.py` only when you ask for a show.
+`wiz listen` turns the bulbs into an audio-reactive visualizer that runs on its
+own. You turn it on once and forget it: it taps the machine's audio, the lights
+follow whatever is playing, and when it recognises the track it switches to the
+show for that song. There is nothing else to configure.
+
+```sh
+wiz listen on @lamp     # set it and forget it
+wiz listen              # is it running, and what is playing?
+wiz listen off          # stop and put the lights back the way they were
+```
+
+The audio stack is deliberately kept out of the core CLI: `wiz.py` stays
+dependency-free and loads `wiz_live.py` only when you ask for a show.
+
+### Capturing the audio
+
+On macOS 14.4+ there is no loopback driver involved. `wiz_tap.swift` creates a
+Core Audio process tap (`CATapDescription` +
+`AudioHardwareCreateProcessTap`) wrapped in a private aggregate device, the
+same mechanism Atoll uses, so Spotify, a browser, or anything else is captured
+directly. The helper is compiled once into `~/.config/wiz/bin/wiz-tap`.
+
+Elsewhere, `--source system` falls back to a loopback input device: a monitor
+source on Linux, Stereo Mix or VB-Cable on Windows.
+
+macOS grants audio capture per application, so the first run may ask for
+"System Audio Recording" permission for your terminal.
 
 ### Install the extras
 
@@ -286,18 +310,28 @@ directory that contains it). With the curl install, drop the file next to it:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_live.py \
   -o ~/.local/bin/wiz_live.py
+curl -fsSL https://raw.githubusercontent.com/himanusia/wizterm/main/wiz_tap.swift \
+  -o ~/.local/bin/wiz_tap.swift     # macOS system audio tap
 ```
 
 Then `pip install numpy sounddevice shazamio` (or use the venv of your choice).
+If the interpreter running `wiz` has no numpy, put the extras in
+`~/.config/wiz/venv` and the live commands will re-exec into it automatically:
+
+```sh
+uv venv ~/.config/wiz/venv && uv pip install --python ~/.config/wiz/venv/bin/python \
+  numpy sounddevice shazamio
+```
 
 ### Commands
 
 ```sh
+wiz listen on|off|status                   # the automatic listener
 wiz shows                                  # list modes
 wiz live                                   # microphone, default mode
 wiz live @lamp --mode spectrum             # one light, punchier mode
 wiz live @lamp --file song.mp3             # repeatable, perfectly synced demo
-wiz live @lamp --source system             # system audio (loopback device)
+wiz live @lamp --source system             # system audio (macOS tap, no driver)
 wiz detect --seconds 8                     # identify the song playing
 wiz detect --apply                         # identify, then start its show
 wiz caramelldansen @lamp                   # the meme, 165 BPM
@@ -326,9 +360,10 @@ Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
 - `file`: decode any ffmpeg-readable file, so a demo looks the same every time.
   Use `--file song.mp3`, which implies this source; the path may also be given
   in the target slot (`wiz live --source file song.mp3`).
-- `system`: capture what the machine is playing. On macOS this needs a
-  loopback driver (BlackHole, Loopback, ...) routed as an input device; on
-  Linux use a monitor source; on Windows use Stereo Mix or VB-Cable.
+- `system`: capture what the machine is playing. On macOS 14.4+ this uses the
+  bundled Core Audio process tap, so no driver is needed; elsewhere it needs a
+  loopback input device (a monitor source on Linux, Stereo Mix or VB-Cable on
+  Windows). This is the source `wiz listen` uses.
 
 ### Detecting the song
 
@@ -368,7 +403,8 @@ internet-facing service.
 Implemented here: local discovery, registry IDs/names, on/off, brightness,
 color temperature, RGB, named lighting/color presets, known ambience/scene
 activation, safe forgetting/re-adoption, and optional audio-reactive shows
-(`wiz live`, `wiz detect`, `wiz caramelldansen`) in a separate module.
+(`wiz listen`, `wiz live`, `wiz detect`, `wiz caramelldansen`) in a separate
+module, plus a small Swift helper for macOS system audio capture.
 
 Not implemented here: WiZ account/cloud control, rooms/groups managed by the
 app, schedules and automations, WiZclick, custom light-mode/gradient editing,
@@ -381,6 +417,7 @@ pilot API. The official app may expose more features than this LAN CLI.
 ```sh
 python3 -m unittest discover -s tests -v
 python3 -m py_compile wiz.py wiz_live.py
+swiftc -O -o /tmp/wiz-tap wiz_tap.swift      # macOS system audio helper
 ```
 
 ## License

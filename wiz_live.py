@@ -8,6 +8,8 @@ registry the core CLI already owns.
 
 Commands (each one is also reachable as ``wiz <command>``):
 
+  listen on|off [target]     the automatic listener: tap system audio, react,
+                             name the track, switch shows. on/off is the config
   live [target]              audio-reactive visualizer
   detect [target]            listen, identify the song, theme the lights
   caramelldansen [target]    the meme: BPM-locked two-colour bounce
@@ -16,7 +18,10 @@ Commands (each one is also reachable as ``wiz <command>``):
 Audio sources:
 
   --source mic               default; the machine microphone
-  --source system            system/loopback input (BlackHole, Loopback, ...)
+  --source system            macOS: a Core Audio process tap, so Spotify and
+                             anything else is captured directly with no
+                             BlackHole or other loopback driver. Elsewhere: a
+                             loopback input device.
   --source file PATH         a decoded audio file, for repeatable demos
 
 Required extras:
@@ -38,13 +43,15 @@ import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 
-LIVE_VERSION = "0.1.0"
+LIVE_VERSION = "0.2.0"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
@@ -382,6 +389,160 @@ def file_blocks(path, rate, block):
 
 # ---------- transport ----------
 
+
+# ---------- system audio tap (macOS 14.4+, no loopback driver) ----------
+
+TAP_BINARY = os.path.join(os.path.expanduser("~/.config/wiz/bin"), "wiz-tap")
+TAP_SOURCE_NAME = "wiz_tap.swift"
+
+
+def tap_source_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), TAP_SOURCE_NAME)
+
+
+def build_tap(force=False):
+    """Compile wiz_tap.swift once into ~/.config/wiz/bin and reuse it."""
+    if os.path.isfile(TAP_BINARY) and not force:
+        return TAP_BINARY
+    swiftc = shutil.which("swiftc")
+    if not swiftc:
+        raise MissingExtra(
+            "the system audio tap needs swiftc (macOS command line tools): "
+            "run 'xcode-select --install'"
+        )
+    source = tap_source_path()
+    if not os.path.isfile(source):
+        raise MissingExtra("%s was not found next to wiz_live.py" % source)
+    os.makedirs(os.path.dirname(TAP_BINARY), exist_ok=True)
+    build = subprocess.run([swiftc, "-O", "-o", TAP_BINARY, source],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if build.returncode != 0:
+        raise MissingExtra("building the audio tap failed:\n%s"
+                           % build.stderr.decode("utf-8", "replace").strip()[-600:])
+    return TAP_BINARY
+
+
+def downmix(payload, channels):
+    """Interleaved float32 bytes to a mono float list."""
+    if channels <= 1:
+        import array
+        samples = array.array("f")
+        samples.frombytes(payload)
+        return list(samples)
+    try:
+        import numpy
+    except ImportError:
+        import array
+        samples = array.array("f")
+        samples.frombytes(payload)
+        frames = len(samples) // channels
+        mono = [0.0] * frames
+        for index in range(frames):
+            base = index * channels
+            mono[index] = sum(samples[base:base + channels]) / channels
+        return mono
+    frames = numpy.frombuffer(payload, dtype="<f4")
+    frames = frames[: len(frames) - (len(frames) % channels)]
+    return frames.reshape(-1, channels).mean(axis=1).tolist()
+
+
+class SystemTap:
+    """Live system audio through a Core Audio process tap.
+
+    This is the same mechanism Atoll uses: ``CATapDescription`` plus
+    ``AudioHardwareCreateProcessTap``, wrapped in a private aggregate device.
+    No BlackHole or other loopback driver is involved, and it works on macOS
+    14.4 and newer.
+    """
+
+    def __init__(self, processes=(), seconds=None, block=2048):
+        self.processes = [name for name in processes if name]
+        self.seconds = seconds
+        self.block = block
+        self.rate = 0
+        self.channels = 1
+        self.process = None
+
+    def _command(self):
+        command = [build_tap()]
+        for name in self.processes:
+            command += ["--process", name]
+        if self.seconds:
+            command += ["--seconds", str(int(self.seconds))]
+        return command
+
+    def __enter__(self):
+        self.process = subprocess.Popen(
+            self._command(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        self.rate, self.channels = self._read_format()
+        return self
+
+    def _read_format(self):
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            line = self.process.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").strip()
+            if text.startswith("FORMAT "):
+                parts = text.split()
+                return int(parts[1]), int(parts[2])
+            if text.startswith("error:"):
+                raise MissingExtra(text)
+        raise MissingExtra(
+            "the audio tap did not start; grant this terminal 'System Audio "
+            "Recording' permission in System Settings > Privacy & Security"
+        )
+
+    def blocks(self):
+        frame_bytes = 4 * max(self.channels, 1)
+        chunk = max(self.block, 256) * frame_bytes
+        pending = b""
+        while True:
+            data = self.process.stdout.read(chunk)
+            if not data:
+                break
+            pending += data
+            usable = len(pending) - (len(pending) % frame_bytes)
+            if usable <= 0:
+                continue
+            payload, pending = pending[:usable], pending[usable:]
+            yield downmix(payload, self.channels)
+
+    def stop(self):
+        if not self.process:
+            return
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        for pipe in (self.process.stdout, self.process.stderr):
+            try:
+                pipe.close()
+            except (AttributeError, OSError):
+                pass
+
+    def __exit__(self, *_exc):
+        self.stop()
+        return False
+
+
+def open_source(options):
+    """Return (blocks, rate, cleanup) for the requested audio source."""
+    if options.source == "file":
+        if not options.file:
+            raise MissingExtra("--source file needs a path, e.g. --file song.mp3")
+        return file_blocks(options.file, options.rate, options.block), options.rate, (lambda: None)
+    if options.source == "system" and sys.platform == "darwin":
+        tap = SystemTap(seconds=options.duration or None, block=options.block)
+        tap.__enter__()
+        return tap.blocks(), tap.rate, tap.stop
+    return mic_blocks(options.source, options.rate, options.block, options.device), \
+        options.rate, (lambda: None)
+
+
 def resolve_lights(state, target):
     """Reuse the core CLI's target resolution, including ``@name`` forms."""
     wiz = core()
@@ -466,11 +627,16 @@ def cmd_shows(_args=None):
     for name in sorted(SHOW_MODES):
         print("  %-16s %s" % (name, SHOW_MODES[name]))
     print("")
-    print("sources: mic (default), system (loopback), file")
+    print("wiz listen on|off      the automatic listener (system audio, no driver)")
+    print("")
+    print("sources: mic (default), system, file")
+    print("  system   macOS: Core Audio process tap, no loopback driver needed")
+    print("           elsewhere: a loopback input device (BlackHole, VB-Cable, ...)")
     print("examples:")
-    print("  wiz live --source mic")
+    print("  wiz listen on @lamp            # set it and forget it")
+    print("  wiz live --source system")
     print("  wiz live @lamp --mode spectrum --sensitivity 2.0")
-    print("  wiz live @lamp --source file song.mp3")
+    print("  wiz live @lamp --file song.mp3")
     print("  wiz caramelldansen @lamp")
     return 0
 
@@ -524,38 +690,57 @@ def _render(records, frames_iter, options, duration=None):
     return chapter
 
 
-def _analysis_frames(blocks, mode, options, records):
-    """Generator of (moment, [(rgb, dimming), ...]) from raw audio blocks."""
-    numpy = require("numpy", "live analysis", "live")
-    rate = options.rate
-    frequencies = numpy.fft.rfftfreq(options.block, d=1.0 / rate)
-    gain = AutoGain()
-    beats = BeatDetector(sensitivity=options.sensitivity)
-    previous = None
-    phase = 0.0
+class Analyser:
+    """Turns raw audio blocks into per-light frames."""
 
-    for position, block in enumerate(blocks):
-        if len(block) < options.block // 4:
-            return
+    def __init__(self, rate, block, sensitivity=1.5, brightness_boost=1.0):
+        self.numpy = require("numpy", "live analysis", "live")
+        self.rate = rate
+        self.block = block
+        self.sensitivity = sensitivity
+        self.brightness_boost = brightness_boost
+        self.frequencies = self.numpy.fft.rfftfreq(block, d=1.0 / rate)
+        self.gain = AutoGain()
+        self.beats = BeatDetector(sensitivity=sensitivity)
+        self.previous = None
+        self.phase = 0.0
+        self.level = 0.0
+        self.beat = False
+        self.levels = [0.0, 0.0, 0.0]
+
+    def feed(self, block):
+        """Absorb one block of mono samples; False when it is too short to use."""
+        block = list(block)
+        if len(block) < max(64, self.block // 4):
+            return False
+        numpy = self.numpy
         window = numpy.hanning(len(block))
         spectrum = numpy.abs(numpy.fft.rfft(numpy.asarray(block, dtype=float) * window))
-        cut = len(frequencies)
-        spectrum = spectrum[:cut]
-        flux = spectral_flux(previous, spectrum)
-        previous = spectrum
-        levels = gain.update(band_energies(frequencies, spectrum))
-        level = clamp(sum(levels) / 3.0 * options.sensitivity, 0.0, 1.0)
-        beat = beats.feed(flux * options.sensitivity)
-        phase = (phase + 0.02 * level) % 1.0
-        moment = position * options.block / rate
-        frames = []
-        for index, _record in enumerate(records):
-            rgb = mode_frame(mode, levels, level, beat, phase, index)
-            dimming = mode_dimming(mode, level, beat)
-            if options.brightness_boost != 1.0:
-                rgb = scale_rgb(rgb, options.brightness_boost)
-            frames.append((rgb, dimming))
-        yield moment, frames
+        spectrum = spectrum[: len(self.frequencies)]
+        flux = spectral_flux(self.previous, spectrum)
+        self.previous = spectrum
+        self.levels = self.gain.update(band_energies(self.frequencies, spectrum))
+        self.level = clamp(sum(self.levels) / 3.0 * self.sensitivity, 0.0, 1.0)
+        self.beat = self.beats.feed(flux * self.sensitivity)
+        self.phase = (self.phase + 0.02 * self.level) % 1.0
+        return True
+
+    def frame(self, mode, index=0):
+        rgb = mode_frame(mode, self.levels, self.level, self.beat, self.phase, index)
+        if self.brightness_boost != 1.0:
+            rgb = scale_rgb(rgb, self.brightness_boost)
+        return rgb, mode_dimming(mode, self.level, self.beat)
+
+
+def _analysis_frames(blocks, mode, options, records):
+    """Generator of (moment, [(rgb, dimming), ...]) from raw audio blocks."""
+    analyser = Analyser(options.rate, options.block, options.sensitivity,
+                        options.brightness_boost)
+    for position, block in enumerate(blocks):
+        if not analyser.feed(block):
+            return
+        moment = position * options.block / options.rate
+        yield moment, [analyser.frame(mode, index) for index in range(len(records))]
 
 
 def _caramelldansen_frames(options, records, palette):
@@ -606,17 +791,20 @@ def cmd_live(argv):
             print("  %s%s" % (record.get("name", "-"), note))
     if options.dry_run:
         print("dry run: no UDP is sent")
-    if options.source == "file":
-        if not options.file:
-            print("wiz live: --source file needs a path, e.g. "
-                  "wiz live @lamp --file song.mp3")
-            return 1
-        blocks = file_blocks(options.file, options.rate, options.block)
-    else:
-        blocks = mic_blocks(options.source, options.rate, options.block, options.device)
+    if options.source == "file" and not options.file:
+        print("wiz live: --source file needs a path, e.g. wiz live @lamp --file song.mp3")
+        return 1
+
+    try:
+        blocks, rate, cleanup = open_source(options)
+    except MissingExtra as exc:
+        print("wiz live: %s" % exc)
+        return 3
+    options.rate = rate
 
     saved = [] if options.dry_run else snapshot(records)
-    print("mode %s on %d light(s); Ctrl-C to stop" % (mode, len(records)))
+    print("mode %s on %d light(s) from %s audio; Ctrl-C to stop"
+          % (mode, len(records), options.source))
     try:
         frames = _analysis_frames(blocks, mode, options, records)
         count = _render(records, frames, options, duration=options.duration or None)
@@ -624,6 +812,7 @@ def cmd_live(argv):
     except KeyboardInterrupt:
         print("\nstopped")
     finally:
+        cleanup()
         if saved:
             restore(saved)
     return 0
@@ -730,6 +919,383 @@ def cmd_detect(argv):
 
 # ---------- argument parsing ----------
 
+
+# ---------- wiz listen: run once, then it reacts to whatever plays ----------
+
+WIZ_HOME = os.path.expanduser("~/.config/wiz")
+LISTEN_CONFIG = os.path.join(WIZ_HOME, "listen.json")
+LISTEN_PID = os.path.join(WIZ_HOME, "listen.pid")
+LISTEN_STATE = os.path.join(WIZ_HOME, "listen-state.json")
+LISTEN_LOG = os.path.join(WIZ_HOME, "listen.log")
+
+# Everything below is automatic: `wiz listen on` is the whole configuration.
+LISTEN_MODE = "spectrum"       # colour hint plus a brightness pulse, reads best
+LISTEN_FPS = 12.0
+LISTEN_SPEED = 1.4             # brightness boost, tuned for a lit room
+LISTEN_INTERVAL = 25.0         # seconds between song identifications
+LISTEN_FIRST_INTERVAL = 10.0   # identify sooner on the first track
+LISTEN_SAMPLE = 8.0            # seconds of audio handed to the recognizer
+LISTEN_PROCESSES = ()          # empty = tap all system audio, Spotify included
+
+
+def listen_defaults():
+    return {"enabled": False, "target": None}
+
+
+def read_listen_config():
+    try:
+        with open(LISTEN_CONFIG, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return listen_defaults()
+    config = listen_defaults()
+    if isinstance(data, dict):
+        config["enabled"] = bool(data.get("enabled"))
+        target = data.get("target")
+        config["target"] = str(target) if target else None
+    return config
+
+
+def write_listen_config(config):
+    os.makedirs(WIZ_HOME, exist_ok=True)
+    with open(LISTEN_CONFIG, "w", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2)
+        handle.write("\n")
+
+
+def read_state():
+    try:
+        with open(LISTEN_STATE, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_state(**fields):
+    state = read_state()
+    state.update(fields)
+    try:
+        os.makedirs(WIZ_HOME, exist_ok=True)
+        with open(LISTEN_STATE, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+            handle.write("\n")
+    except OSError:
+        pass
+
+
+def read_pid():
+    try:
+        with open(LISTEN_PID, encoding="utf-8") as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def pid_alive(pid):
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def listen_log(message):
+    stamp = time.strftime("%H:%M:%S")
+    line = "%s %s\n" % (stamp, message)
+    try:
+        os.makedirs(WIZ_HOME, exist_ok=True)
+        with open(LISTEN_LOG, "a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError:
+        pass
+    # The daemon's own stderr already points at that log file; only echo when a
+    # human is watching a terminal.
+    try:
+        if sys.stderr.isatty():
+            sys.stderr.write(line)
+            sys.stderr.flush()
+    except (AttributeError, ValueError):
+        pass
+
+
+class SongWatcher:
+    """Identifies what is playing in the background, without stalling the lights."""
+
+    def __init__(self, rate=0, interval=LISTEN_INTERVAL, sample=LISTEN_SAMPLE):
+        self.rate = rate
+        self.interval = interval
+        self.sample = sample
+        self.limit = 1
+        self.buffer = []
+        self.thread = None
+        self.result = None
+        self.armed = time.monotonic()
+        self.first = True
+        self.loud_until = 0.0
+
+    def feed(self, block, rate):
+        if rate and rate != self.rate:
+            self.rate = rate
+            self.limit = max(1, int(self.sample * rate))
+        self.buffer.extend(block)
+        if len(self.buffer) > self.limit:
+            del self.buffer[: len(self.buffer) - self.limit]
+        peak = 0.0
+        for value in block:
+            magnitude = value if value >= 0 else -value
+            if magnitude > peak:
+                peak = magnitude
+        if peak > 0.01:
+            self.loud_until = time.monotonic() + 4.0
+
+    def maybe_start(self):
+        """Kick off an identification when audio is playing and one is due."""
+        if self.thread and self.thread.is_alive():
+            return
+        now = time.monotonic()
+        if now > self.loud_until:
+            return  # nothing is playing, nothing to identify
+        # Identify early on the first track, then settle into the interval.
+        delay = LISTEN_FIRST_INTERVAL if self.first else self.interval
+        if now - self.armed < delay:
+            return
+        self.first = False
+        self.armed = now
+        audio = list(self.buffer)
+        self.thread = threading.Thread(target=self._identify, args=(audio,), daemon=True)
+        self.thread.start()
+
+    def _identify(self, audio):
+        try:
+            title, artist = identify_samples(audio, self.rate)
+        except (MissingExtra, OSError, ValueError) as exc:
+            listen_log("song identification skipped: %s" % exc)
+            return
+        if not title:
+            listen_log("no song match")
+            return
+        show = meme_show_for(title)
+        listen_log("now playing: %s%s%s" % (title, " - " if artist else "",
+                                            artist))
+        write_state(song="%s%s%s" % (title, " - " if artist else "", artist),
+                    show=show or LISTEN_MODE)
+        if show:
+            self.result = show
+
+    def take_show(self):
+        show, self.result = self.result, None
+        return show
+
+
+def identify_samples(samples, rate):
+    """Recognize a mono sample list; returns (title, artist) or (None, None)."""
+    shazamio = require("shazamio", "song identification", "recognize")
+    import array
+    import asyncio
+    if not samples:
+        return None, None
+    peak = max(max(samples), -min(samples)) or 1.0
+    scale = 0.95 / peak if peak > 0.95 else 1.0
+    pcm = array.array("h")
+    for value in samples:
+        clamped = value * scale
+        clamped = -1.0 if clamped < -1.0 else 1.0 if clamped > 1.0 else clamped
+        pcm.append(int(clamped * 32767))
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+        sample_path = handle.name
+    try:
+        with wave.open(sample_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(int(rate))
+            wav.writeframes(pcm.tobytes())
+        result = asyncio.run(shazamio.Shazam().recognize(sample_path))
+    finally:
+        try:
+            os.unlink(sample_path)
+        except OSError:
+            pass
+    track = (result or {}).get("track") or {}
+    title = track.get("title")
+    if not title:
+        return None, None
+    return title, track.get("subtitle", "")
+
+
+def listen_loop(records, stop):
+    """The whole show: tap the system audio, drive the lights, name the song."""
+    options = argparse.Namespace(
+        rate=DEFAULT_RATE, block=DEFAULT_BLOCK, sensitivity=1.5,
+        brightness_boost=LISTEN_SPEED, fps=LISTEN_FPS, duration=None,
+        dry_run=False, source="system", file=None, device=None, target=None)
+    tap = SystemTap(processes=LISTEN_PROCESSES, block=options.block)
+    tap.__enter__()
+    options.rate = tap.rate
+    listen_log("tap live: %d Hz, %d channel(s), %d light(s)"
+               % (tap.rate, tap.channels, len(records)))
+
+    analyser = Analyser(options.rate, options.block, options.sensitivity,
+                        options.brightness_boost)
+    watcher = SongWatcher(rate=tap.rate)
+    mode = LISTEN_MODE
+    interval = 1.0 / max(LISTEN_FPS, 1.0)
+    last_sent = {}
+    chapter = 0
+    started = time.monotonic()
+    try:
+        for block in tap.blocks():
+            if stop["now"]:
+                break
+            if not analyser.feed(block):
+                continue
+            watcher.feed(block, options.rate)
+            watcher.maybe_start()
+            switched = watcher.take_show()
+            if switched and switched != mode:
+                mode = switched
+                listen_log("switching to the '%s' show" % mode)
+            for index, record in enumerate(records):
+                frame = analyser.frame(mode, index)
+                if last_sent.get(record.get("id")) == frame:
+                    continue
+                if send_frame(record, frame[0], frame[1]):
+                    last_sent[record.get("id")] = frame
+            chapter += 1
+            owed = started + chapter * interval - time.monotonic()
+            if owed > 0:
+                time.sleep(owed)
+    finally:
+        tap.stop()
+
+
+def cmd_listen_daemon(_argv=None):
+    """Foreground worker started by `wiz listen on`."""
+    config = read_listen_config()
+    records = _load_targets(config.get("target"))
+    if records is None:
+        listen_log("no lights to drive, exiting")
+        return 1
+    stop = {"now": False}
+
+    def on_signal(_signum, _frame):
+        stop["now"] = True
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    saved = snapshot(records)
+    write_state(pid=os.getpid(), started=time.time(), song=None, show=LISTEN_MODE,
+                lights=[record.get("name") or record.get("id") for record in records])
+    listen_log("listening on system audio; %d light(s)" % len(records))
+    try:
+        while not stop["now"]:
+            try:
+                listen_loop(records, stop)
+            except MissingExtra as exc:
+                listen_log("tap unavailable: %s" % exc)
+                stop["now"] = True
+            if not stop["now"]:
+                listen_log("tap ended, reconnecting")
+                time.sleep(2.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        restore(saved)
+        write_state(pid=None, song=None)
+        listen_log("listening stopped, lights restored")
+    return 0
+
+
+def cmd_listen(argv):
+    action = "status"
+    target = None
+    for argument in argv:
+        if argument in ("on", "off", "status", "start", "stop"):
+            action = argument
+        elif argument.startswith("-"):
+            print("wiz listen: unknown option '%s'" % argument)
+            return 2
+        else:
+            target = argument
+    if action in ("start",):
+        action = "on"
+    if action in ("stop",):
+        action = "off"
+
+    if action == "on":
+        config = read_listen_config()
+        try:
+            chosen = normalize_target(target) if target else config.get("target")
+        except ValueError as exc:
+            print("wiz listen: %s" % exc)
+            return 2
+        config["enabled"] = True
+        config["target"] = chosen
+        write_listen_config(config)
+        existing = read_pid()
+        if pid_alive(existing):
+            print("wiz listen: already on (pid %s)" % existing)
+            return 0
+        os.makedirs(WIZ_HOME, exist_ok=True)
+        handle = open(LISTEN_LOG, "a")
+        child = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "_listen-daemon"],
+            stdout=handle, stderr=handle, stdin=subprocess.DEVNULL,
+            start_new_session=True)
+        with open(LISTEN_PID, "w", encoding="utf-8") as pid_file:
+            pid_file.write(str(child.pid))
+        print("wiz listen on (pid %s)" % child.pid)
+        print("  source  system audio, tapped directly (no BlackHole needed)")
+        print("  lights  %s" % (chosen or "every tracked light"))
+        print("  mode    %s, switched automatically when a known track plays" % LISTEN_MODE)
+        print("  log     %s" % LISTEN_LOG)
+        return 0
+
+    if action == "off":
+        config = read_listen_config()
+        config["enabled"] = False
+        write_listen_config(config)
+        pid = read_pid()
+        if pid_alive(pid):
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(60):
+                if not pid_alive(pid):
+                    break
+                time.sleep(0.1)
+            print("wiz listen off (stopped pid %s, lights restored)" % pid)
+        else:
+            print("wiz listen off (nothing was running)")
+        try:
+            os.unlink(LISTEN_PID)
+        except OSError:
+            pass
+        return 0
+
+    config = read_listen_config()
+    pid = read_pid()
+    running = pid_alive(pid)
+    state = read_state()
+    print("wiz listen: %s" % ("on" if running else "off"))
+    if running:
+        uptime = time.time() - float(state.get("started") or time.time())
+        print("  pid     %s (up %dm %02ds)" % (pid, int(uptime // 60), int(uptime % 60)))
+        print("  lights  %s" % ", ".join(state.get("lights") or []) or "-")
+        print("  song    %s" % (state.get("song") or "-"))
+        print("  show    %s" % (state.get("show") or LISTEN_MODE))
+    elif config["enabled"]:
+        print("  config says on but no process is running; run 'wiz listen on'")
+        return 1
+    print("  config  %s" % LISTEN_CONFIG)
+    return 0
+
+
 def _add_target(parser):
     parser.add_argument("target", nargs="?", default=None,
                         help="light ID, name or @name; default is every tracked light")
@@ -801,7 +1367,8 @@ COMMANDS = {
     "visualise": cmd_live,
     "caramelldansen": cmd_caramelldansen,
     "detect": cmd_detect,
-    "listen": cmd_detect,
+    "listen": cmd_listen,
+    "_listen-daemon": cmd_listen_daemon,
 }
 
 

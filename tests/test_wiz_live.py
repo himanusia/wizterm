@@ -213,7 +213,146 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+class DownmixTests(unittest.TestCase):
+    def test_mono_passes_through(self):
+        import array
+        samples = array.array("f", [0.5, -0.25, 1.0])
+        self.assertEqual(wiz_live.downmix(samples.tobytes(), 1), [0.5, -0.25, 1.0])
+
+    def test_stereo_is_averaged(self):
+        import array
+        # L R L R -> mono pairs
+        samples = array.array("f", [1.0, 0.0, 0.5, 0.5])
+        self.assertEqual(wiz_live.downmix(samples.tobytes(), 2), [0.5, 0.5])
+
+
+class TapTests(unittest.TestCase):
+    def test_cached_binary_is_reused(self):
+        with TemporaryDirectory() as tmp:
+            binary = os.path.join(tmp, "wiz-tap")
+            with open(binary, "w") as handle:
+                handle.write("")
+            with patch.object(wiz_live, "TAP_BINARY", binary):
+                self.assertEqual(wiz_live.build_tap(), binary)
+
+    def test_building_without_swiftc_explains_itself(self):
+        with TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "wiz-tap")
+            with patch.object(wiz_live, "TAP_BINARY", missing):
+                with patch.object(wiz_live.shutil, "which", return_value=None):
+                    with self.assertRaises(wiz_live.MissingExtra) as caught:
+                        wiz_live.build_tap()
+            self.assertIn("swiftc", str(caught.exception))
+
+    def test_open_source_needs_a_file_path(self):
+        options = types.SimpleNamespace(source="file", file=None, rate=22050,
+                                        block=1024, duration=0, device=None)
+        with self.assertRaises(wiz_live.MissingExtra):
+            wiz_live.open_source(options)
+
+    def test_open_source_reads_a_file(self):
+        options = types.SimpleNamespace(source="file", file=__file__, rate=22050,
+                                        block=1024, duration=0, device=None)
+        blocks, rate, cleanup = wiz_live.open_source(options)
+        self.assertEqual(rate, 22050)
+        self.assertTrue(callable(cleanup))
+
+
+class ListenTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.patches = [
+            patch.object(wiz_live, "WIZ_HOME", self.tmp.name),
+            patch.object(wiz_live, "LISTEN_CONFIG", os.path.join(self.tmp.name, "listen.json")),
+            patch.object(wiz_live, "LISTEN_PID", os.path.join(self.tmp.name, "listen.pid")),
+            patch.object(wiz_live, "LISTEN_STATE", os.path.join(self.tmp.name, "listen-state.json")),
+            patch.object(wiz_live, "LISTEN_LOG", os.path.join(self.tmp.name, "listen.log")),
+        ]
+        for item in self.patches:
+            item.start()
+
+    def tearDown(self):
+        for item in self.patches:
+            item.stop()
+        self.tmp.cleanup()
+
+    def test_config_round_trip(self):
+        self.assertEqual(wiz_live.read_listen_config(),
+                         {"enabled": False, "target": None})
+        wiz_live.write_listen_config({"enabled": True, "target": "lamp"})
+        self.assertEqual(wiz_live.read_listen_config(),
+                         {"enabled": True, "target": "lamp"})
+
+    def test_broken_config_falls_back_to_defaults(self):
+        with open(wiz_live.LISTEN_CONFIG, "w") as handle:
+            handle.write("{not json")
+        self.assertEqual(wiz_live.read_listen_config(),
+                         {"enabled": False, "target": None})
+
+    def test_pid_liveness(self):
+        self.assertTrue(wiz_live.pid_alive(os.getpid()))
+        self.assertFalse(wiz_live.pid_alive(None))
+        self.assertFalse(wiz_live.pid_alive(0))
+        self.assertFalse(wiz_live.pid_alive(999999))
+
+    def test_status_when_off(self):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = wiz_live.cmd_listen([])
+        self.assertEqual(code, 0)
+        self.assertIn("wiz listen: off", buffer.getvalue())
+
+    def test_on_is_idempotent_while_running(self):
+        wiz_live.write_listen_config({"enabled": True, "target": "lamp"})
+        with open(wiz_live.LISTEN_PID, "w") as handle:
+            handle.write(str(os.getpid()))
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = wiz_live.cmd_listen(["on"])
+        self.assertEqual(code, 0)
+        self.assertIn("already on", buffer.getvalue())
+
+    def test_off_without_a_daemon_is_harmless(self):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = wiz_live.cmd_listen(["off"])
+        self.assertEqual(code, 0)
+        self.assertIn("nothing was running", buffer.getvalue())
+        self.assertFalse(wiz_live.read_listen_config()["enabled"])
+
+    def test_unknown_option_is_rejected(self):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = wiz_live.cmd_listen(["--nope"])
+        self.assertEqual(code, 2)
+
+
+class SongWatcherTests(unittest.TestCase):
+    def test_stays_quiet_without_audio(self):
+        watcher = wiz_live.SongWatcher(rate=48000)
+        watcher.armed -= 60
+        watcher.maybe_start()
+        self.assertIsNone(watcher.thread)
+
+    def test_fires_once_audio_has_been_playing(self):
+        watcher = wiz_live.SongWatcher(rate=48000, interval=0.0)
+        with patch.object(wiz_live, "LISTEN_FIRST_INTERVAL", 0.0):
+            watcher.armed -= 1
+            watcher.feed([0.5] * 512, 48000)
+            with patch.object(wiz_live, "identify_samples", return_value=(None, None)):
+                watcher.maybe_start()
+                self.assertIsNotNone(watcher.thread)
+                watcher.thread.join(timeout=5)
+
+    def test_take_show_clears_the_result(self):
+        watcher = wiz_live.SongWatcher()
+        watcher.result = "caramelldansen"
+        self.assertEqual(watcher.take_show(), "caramelldansen")
+        self.assertIsNone(watcher.take_show())
+
+
 class MetadataTests(unittest.TestCase):
+
     def test_live_interpreter_is_none_without_a_venv(self):
         with patch.object(wiz, "LIVE_VENV_PYTHONS", ()):
             self.assertIsNone(wiz._live_interpreter())

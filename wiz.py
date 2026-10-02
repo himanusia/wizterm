@@ -31,6 +31,8 @@ Usage:
 
 Optional audio-reactive shows (needs the 'live' extra, see README):
   wiz shows                        list visualizer modes
+  wiz listen on | off              the automatic listener: lights react to
+                                   whatever plays, system audio, no driver
   wiz live [target]                audio-reactive visualizer (mic, loopback or file)
   wiz detect [target]              identify the playing song and theme the lights
   wiz caramelldansen [target]      the meme: two colours swapping on every half beat
@@ -63,7 +65,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
@@ -1386,7 +1388,8 @@ LIVE_COMMANDS = ("shows", "live", "visualize", "visualise", "caramelldansen",
                  "detect", "listen")
 
 # Subset that needs numpy/sounddevice/shazamio at run time.
-LIVE_AUDIO_COMMANDS = ("live", "visualize", "visualise", "detect", "listen")
+LIVE_AUDIO_COMMANDS = ("live", "visualize", "visualise", "detect", "listen",
+                       "_listen-daemon")
 
 # Optional venv that carries the audio extras, so the live commands work even
 # when the interpreter running this script is a bare system python.
