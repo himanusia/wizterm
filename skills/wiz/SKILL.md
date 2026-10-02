@@ -1,7 +1,7 @@
 ---
 name: wiz-lan-control
 description: "Control Philips WiZ smart lights on the local network via the wiz CLI: status, on/off, brightness, presets, RGB, ambience, names, discovery, plus optional audio-reactive shows, song detection and meme effects. Use for any WiZ light request."
-version: 2.0.1
+version: 2.0.2
 category: smart-home
 ---
 

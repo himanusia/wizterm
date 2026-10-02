@@ -52,7 +52,7 @@ import threading
 import time
 import wave
 
-LIVE_VERSION = "0.2.1"
+LIVE_VERSION = "0.2.2"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
@@ -620,33 +620,33 @@ def send_frame(record, rgb, dimming, tolerate_failure=True):
 def restore_params(pilot):
     """Coherent setPilot candidates that recreate a snapshot, safest first.
 
-    A bulb rejects a single command that mixes conflicting modes, for example
+    A bulb rejects one command that mixes conflicting modes, for example
     ``sceneId`` together with ``r/g/b`` and ``temp``, so send exactly one of
-    them. A light that was off keeps its colour while dark, so state alone is
-    enough there.
+    them plus the power state and brightness. Brightness and colour are stored
+    even while a light is off, so restoring them keeps the room identical for
+    the next time it is switched on.
     """
     if not pilot:
         return [{"state": False}]
     state = bool(pilot.get("state", True))
-    if not state:
-        return [{"state": False}]
-    base = {"state": True}
+    base = {"state": state}
     dimming = pilot.get("dimming")
     if isinstance(dimming, int) and 10 <= dimming <= 100:
         base["dimming"] = dimming
+    plain = {key: value for key, value in base.items()}
     if pilot.get("sceneId"):
         primary = dict(base)
         primary["sceneId"] = int(pilot["sceneId"])
-        return [primary, base]
+        return [primary, plain]
     if any(key in pilot for key in ("r", "g", "b")):
         primary = dict(base)
         primary.update({key: int(pilot.get(key, 0)) for key in ("r", "g", "b")})
-        return [primary, base]
+        return [primary, plain]
     if pilot.get("temp"):
         primary = dict(base)
         primary["temp"] = pilot["temp"]
-        return [primary, base]
-    return [base]
+        return [primary, plain]
+    return [plain]
 
 
 def restore(records):
