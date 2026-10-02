@@ -65,7 +65,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.12.2"
+VERSION = "0.12.3"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
@@ -649,6 +649,32 @@ def _is_wiz_script(path):
     )
 
 
+# Optional assets that live beside the installed CLI. They are refreshed only
+# when a copy is already there, so a plain install stays a single file and an
+# install that opted into live shows stays in sync.
+LIVE_ASSETS = ("wiz_live.py", "wiz_tap.swift")
+
+
+def _optional_live_updates(cli_target, ref):
+    """Refresh the optional live assets already sitting beside an installed CLI."""
+    updates = []
+    directory = os.path.dirname(os.path.abspath(cli_target))
+    for name in LIVE_ASSETS:
+        local = os.path.join(directory, name)
+        if not os.path.isfile(local):
+            continue
+        try:
+            remote = _fetch_url(_update_url(ref, name))
+        except (HTTPError, URLError):
+            print("wiz: %s is not in this release; left %s alone" % (name, local))
+            continue
+        if name.endswith(".py"):
+            compile(remote, name, "exec")
+        if remote.strip():
+            updates.append((local, remote, False))
+    return updates
+
+
 def _update_targets():
     candidates = [os.path.expanduser("~/.local/bin/wiz")]
     argv_path = os.path.abspath(os.path.expanduser(sys.argv[0]))
@@ -986,10 +1012,16 @@ def cmd_update(args):
             if not targets:
                 raise OSError("no installed wiz executable found to update")
             updates.extend((target, remote_source, True) for target in targets)
+            for target in targets:
+                updates.extend(_optional_live_updates(target, ref))
         updates.extend((skill_path, remote_skill, False) for skill_path in update_skill_paths)
         _transactional_write_updates(updates)
         if update_cli:
             print("updated CLI: %s" % ", ".join(targets))
+            assets = sorted({os.path.basename(path) for path, _text, _exec in updates
+                             if os.path.basename(path) in LIVE_ASSETS})
+            if assets:
+                print("also refreshed beside it: %s" % ", ".join(assets))
         if update_skill:
             print("updated skills: %s" % ", ".join(update_skill_paths))
         print("reload the relevant harness session to load skill updates")

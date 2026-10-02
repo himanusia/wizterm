@@ -114,7 +114,10 @@ wiz update --harness all                    # sync all supported skill targets
 `wiz update` downloads `wiz.py`, `pyproject.toml`, and the portable WiZ skill over
 HTTPS, checks that the source/package versions match, compiles the candidate
 without executing it, refuses downgrades, then atomically updates the installed
-`wiz` script and the selected skill targets. The default skill target
+`wiz` script and the selected skill targets. When `wiz_live.py` or
+`wiz_tap.swift` already sit beside the installed `wiz` script they are
+refreshed too, so an install that opted into live shows stays in sync; a plain
+single-file install is left alone. The default skill target
 is the active Hermes skill under `HERMES_HOME`; the other global targets are:
 
 - Codex: `~/.agents/skills/wiz-lan-control/SKILL.md`
