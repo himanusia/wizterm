@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wizterm"
-version = "0.12.3"
+version = "0.12.4"
 description = "Control Philips WiZ lights over LAN - no cloud, no bridge, no dependencies."
 readme = "README.md"
 license = {file = "LICENSE"}

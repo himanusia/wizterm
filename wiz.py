@@ -65,7 +65,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.12.3"
+VERSION = "0.12.4"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
@@ -670,7 +670,7 @@ def _optional_live_updates(cli_target, ref):
             continue
         if name.endswith(".py"):
             compile(remote, name, "exec")
-        if remote.strip():
+        if remote.strip() and _read_text_or_empty(local) != remote:
             updates.append((local, remote, False))
     return updates
 
@@ -989,39 +989,46 @@ def cmd_update(args):
         ]
         update_cli = options["force"] or source_tuple > current_tuple
         update_skill = bool(update_skill_paths)
+        targets = _update_targets()
+        # The optional assets are checked even when wiz.py is already current, so
+        # a stale wiz_live.py beside an up-to-date CLI still catches up. Never on
+        # a downgrade.
+        live_updates = []
+        if targets and source_tuple >= current_tuple:
+            for target in targets:
+                live_updates.extend(_optional_live_updates(target, ref))
         print("local CLI %s -> remote CLI %s (%s)" % (VERSION, project_version, ref))
         print("remote skill %s; targets: %s" % (
             skill_version, ", ".join(path for path, _version, _tuple in skill_states)))
         for skill_path, current_skill_version, _current_skill_tuple in skill_states:
             print("local skill %s -> remote skill %s (%s)" % (
                 current_skill_version or "missing", skill_version, skill_path))
+        if live_updates:
+            print("stale live assets: %s" % ", ".join(
+                os.path.basename(path) for path, _text, _exec in live_updates))
         if options["check"]:
-            if not update_cli and not update_skill:
+            if not update_cli and not update_skill and not live_updates:
                 print("already up to date")
             else:
                 print("update available")
             return 0
-        if not update_cli and not update_skill:
+        if not update_cli and not update_skill and not live_updates:
             print("already up to date")
             return 0
 
         updates = []
-        targets = []
         if update_cli:
-            targets = _update_targets()
             if not targets:
                 raise OSError("no installed wiz executable found to update")
             updates.extend((target, remote_source, True) for target in targets)
-            for target in targets:
-                updates.extend(_optional_live_updates(target, ref))
+        updates.extend(live_updates)
         updates.extend((skill_path, remote_skill, False) for skill_path in update_skill_paths)
         _transactional_write_updates(updates)
         if update_cli:
             print("updated CLI: %s" % ", ".join(targets))
-            assets = sorted({os.path.basename(path) for path, _text, _exec in updates
-                             if os.path.basename(path) in LIVE_ASSETS})
-            if assets:
-                print("also refreshed beside it: %s" % ", ".join(assets))
+        if live_updates:
+            print("refreshed live assets: %s" % ", ".join(
+                os.path.basename(path) for path, _text, _exec in live_updates))
         if update_skill:
             print("updated skills: %s" % ", ".join(update_skill_paths))
         print("reload the relevant harness session to load skill updates")

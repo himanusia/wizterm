@@ -589,11 +589,12 @@ class WizRegistryTests(unittest.TestCase):
             return next(value for suffix, value in responses.items() if url.endswith("/" + suffix))
 
         with patch.object(wiz, "_fetch_url", side_effect=fetch):
-            with patch.object(wiz, "_update_targets") as targets:
-                result = wiz.cmd_update(["--check", "--ref", "release-test"])
+            with patch.object(wiz, "_update_targets", return_value=[]):
+                with patch.object(wiz, "_transactional_write_updates") as writer:
+                    result = wiz.cmd_update(["--check", "--ref", "release-test"])
 
         self.assertEqual(result, 0)
-        targets.assert_not_called()
+        writer.assert_not_called()
 
     def test_update_ref_rejects_url_injection(self):
         with patch.object(wiz, "_fetch_url") as fetch:
@@ -718,6 +719,51 @@ class OptionalLiveAssetTests(unittest.TestCase):
                 updates = wiz._optional_live_updates(cli, "main")
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0][1], "// new\n")
+
+    def test_an_asset_that_already_matches_is_left_alone(self):
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            with open(os.path.join(tmp, "wiz_live.py"), "w") as handle:
+                handle.write("same\n")
+            with patch.object(wiz, "_fetch_url",
+                              side_effect=self._fetch({"wiz_live.py": "same\n"})):
+                self.assertEqual(wiz._optional_live_updates(cli, "main"), [])
+
+    def test_a_stale_asset_is_refreshed_even_when_the_cli_is_current(self):
+        # The whole point: the CLI being up to date must not hide a stale module
+        # sitting next to it.
+        current_source = 'VERSION = "%s"\n' % wiz.VERSION
+        current_project = '[project]\nversion = "%s"\n' % wiz.VERSION
+        current_skill = "---\nname: wiz-lan-control\nversion: 9.9.9\n---\n"
+        fresh_live = 'LIVE_VERSION = "9.9.9"\n'
+
+        def fetch(url):
+            if url.endswith("/wiz.py"):
+                return current_source
+            if url.endswith("/pyproject.toml"):
+                return current_project
+            if url.endswith("/skills/wiz/SKILL.md"):
+                return current_skill
+            if url.endswith("/wiz_live.py"):
+                return fresh_live
+            raise AssertionError(url)
+
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            asset = os.path.join(tmp, "wiz_live.py")
+            with open(asset, "w") as handle:
+                handle.write("old\n")
+            output = io.StringIO()
+            with patch.object(wiz, "_fetch_url", side_effect=fetch):
+                with patch.object(wiz, "_update_targets", return_value=[cli]):
+                    with patch.object(wiz, "_skill_paths", return_value=[]):
+                        with redirect_stdout(output):
+                            result = wiz.cmd_update(["--ref", "release-test"])
+            self.assertEqual(result, 0)
+            with open(asset) as handle:
+                self.assertEqual(handle.read(), fresh_live)
+        self.assertNotIn("already up to date", output.getvalue())
+        self.assertIn("refreshed live assets", output.getvalue())
 
     def test_update_refreshes_the_asset_next_to_the_cli(self):
         remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
