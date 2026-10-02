@@ -4,14 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wizterm"
-version = "0.10.0"
+version = "0.11.0"
 description = "Control Philips WiZ lights over LAN - no cloud, no bridge, no dependencies."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.7"
+dependencies = []
+
+[project.optional-dependencies]
+# Audio-reactive shows (wiz live). The core CLI stays dependency-free.
+live = ["numpy>=1.24", "sounddevice>=0.4.6"]
+# Song identification for wiz detect.
+recognize = ["shazamio>=0.5.0"]
+all = ["numpy>=1.24", "sounddevice>=0.4.6", "shazamio>=0.5.0"]
 
 [project.scripts]
 wiz = "wiz:main"
+wiz-live = "wiz_live:main"
 
 [tool.setuptools]
-py-modules = ["wiz"]
+py-modules = ["wiz", "wiz_live"]
