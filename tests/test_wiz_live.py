@@ -132,21 +132,31 @@ class EffectTests(unittest.TestCase):
         second, _ = next(stream)
         self.assertGreaterEqual(second - first, 0.2)
 
-    def test_caramelldansen_brightness_punches_and_decays(self):
-        swap = 60.0 / wiz_live.CARAMELLDANSEN_BPM
-        _rgb, at_hit = wiz_live.caramelldansen_frame(0.0)
-        _rgb, midway = wiz_live.caramelldansen_frame(swap * 0.5)
-        _rgb, before_next = wiz_live.caramelldansen_frame(swap * 0.9)
-        self.assertEqual(at_hit, 100)
-        self.assertGreater(at_hit, midway)
-        self.assertGreater(midway, before_next)
-        self.assertGreaterEqual(before_next, 10)
+    def test_dimming_stays_at_full_brightness(self):
+        # The meme swaps pose, it does not fade, so the light must never dim.
+        beat = 60.0 / wiz_live.CARAMELLDANSEN_BPM
+        for step in range(40):
+            _rgb, dimming = wiz_live.caramelldansen_frame(step * beat / 8)
+            self.assertEqual(dimming, 100)
+        self.assertEqual(wiz_live.CARAMELLDANSEN_DIM, 100)
+
+    def test_only_the_colour_moves_over_a_whole_loop(self):
+        beat = 60.0 / wiz_live.CARAMELLDANSEN_BPM
+        colours = set()
+        dimmings = set()
+        for step in range(200):
+            rgb, dimming = wiz_live.caramelldansen_frame(step * beat / 20)
+            colours.add(rgb)
+            dimmings.add(dimming)
+        self.assertEqual(len(colours), 2)
+        self.assertEqual(dimmings, {100})
 
     def test_caramelldansen_dimming_stays_in_protocol_range(self):
         for step in range(200):
             _rgb, dimming = wiz_live.caramelldansen_frame(step * 0.037)
             self.assertGreaterEqual(dimming, 10)
             self.assertLessEqual(dimming, 100)
+            self.assertEqual(dimming, 100)
 
     def test_caramelldansen_respects_a_custom_bpm(self):
         # At 60 BPM one beat is one second, so one pose per second.

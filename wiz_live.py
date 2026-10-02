@@ -52,7 +52,7 @@ import threading
 import time
 import wave
 
-LIVE_VERSION = "0.2.5"
+LIVE_VERSION = "0.2.6"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
@@ -74,7 +74,7 @@ SHOW_MODES = {
     "strobe": "white flash on every detected beat, dim in between",
     "spectrum": "colour hint from the spectrum plus an aggressive brightness pulse",
     "multi": "one frequency band per light, for two or more bulbs",
-    "caramelldansen": "the meme: two colours swapping on every half beat",
+    "caramelldansen": "the meme: full brightness, two colours swapping once per beat",
 }
 
 DEFAULT_MODE = "bands"
@@ -267,18 +267,16 @@ class BeatDetector:
 
 # ---------- effects (pure, time-driven, unit-testable) ----------
 
-CARAMELLDANSEN_FLOOR = 25
+CARAMELLDANSEN_DIM = 100
 
 
 def caramelldansen_frame(moment, bpm=CARAMELLDANSEN_BPM, colors=CARAMELLDANSEN_COLORS,
-                         swaps_per_beat=CARAMELLDANSEN_SWAPS,
-                         dim_floor=CARAMELLDANSEN_FLOOR, dim_peak=100):
-    """Deterministic two-colour bounce state at ``moment`` seconds.
+                         swaps_per_beat=CARAMELLDANSEN_SWAPS):
+    """The meme state at ``moment`` seconds, as ``(rgb, dimming)``.
 
-    The colour swaps ``swaps_per_beat`` times per beat and the brightness decays
-    from the swap until the next one, which is the light equivalent of the
-    meme's hop. One swap per beat is the meme; two is a strobe. Returns
-    ``(rgb, dimming)``.
+    Only the colour moves. The meme swaps pose, it does not fade, so the light
+    stays at full brightness and flips between the palette colours once per
+    beat. ``swaps_per_beat`` higher than 1 is a strobe, not a dance.
     """
     palette = [parse_color(value) if isinstance(value, str) else tuple(value)
                for value in colors]
@@ -287,11 +285,7 @@ def caramelldansen_frame(moment, bpm=CARAMELLDANSEN_BPM, colors=CARAMELLDANSEN_C
     beat = max(moment, 0.0) * bpm / 60.0
     step = beat * max(1, int(swaps_per_beat))
     index = int(math.floor(step)) % len(palette)
-    progress = step - math.floor(step)
-    # Brightness punches on every swap and falls away until the next one.
-    energy = (1.0 - progress) ** 2
-    dimming = int(round(clamp(dim_floor + (dim_peak - dim_floor) * energy, 10, 100)))
-    return palette[index], dimming
+    return palette[index], CARAMELLDANSEN_DIM
 
 
 def mode_frame(mode, levels, level, beat, phase, index=0):
@@ -1409,7 +1403,7 @@ def _live_parser():
 def _caramelldansen_parser():
     parser = argparse.ArgumentParser(
         prog="wiz caramelldansen",
-        description="two colours swapping on every half beat, %s BPM by default"
+        description="full brightness, two colours swapping once per beat, %s BPM by default"
                     % int(CARAMELLDANSEN_BPM))
     _add_target(parser)
     _add_common(parser)
