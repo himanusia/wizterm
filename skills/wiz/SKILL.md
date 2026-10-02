@@ -1,7 +1,7 @@
 ---
 name: wiz-lan-control
 description: "Control Philips WiZ smart lights on the local network via the wiz CLI: status, on/off, brightness, presets, RGB, ambience, names, discovery, plus optional audio-reactive shows, song detection and meme effects. Use for any WiZ light request."
-version: 2.0.2
+version: 2.0.3
 category: smart-home
 ---
 
@@ -63,7 +63,10 @@ wiz update --harness all              # sync all supported global targets
 The updater fetches `wiz.py`, `pyproject.toml`, and this portable skill over HTTPS,
 checks matching version metadata, compiles the candidate without executing it,
 refuses downgrades, and atomically updates the installed `wiz` script plus the
-selected skill targets. The default target is the active Hermes skill. Other
+selected skill targets. `wiz_live.py` and `wiz_tap.swift` are refreshed as well
+when they already sit beside the installed `wiz` script, so a live install stays
+in sync and a plain single-file install is untouched. The default target is the
+active Hermes skill. Other
 global targets are Codex `~/.agents/skills/wiz-lan-control/SKILL.md`, Claude Code
 `~/.claude/skills/wiz-lan-control/SKILL.md`, and OpenCode
 `~/.config/opencode/skills/wiz-lan-control/SKILL.md`. It does not update other

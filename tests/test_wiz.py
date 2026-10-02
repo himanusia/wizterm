@@ -6,6 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import wiz
 
@@ -651,6 +652,104 @@ class WizRegistryTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output.getvalue().strip(), "wiz %s" % wiz.VERSION)
+
+
+class OptionalLiveAssetTests(unittest.TestCase):
+    """The live assets beside the CLI are optional, and stay in sync if present."""
+
+    @staticmethod
+    def _fetch(responses):
+        def fetch(url):
+            for suffix, value in responses.items():
+                if url.endswith("/" + suffix):
+                    return value
+            raise AssertionError(url)
+        return fetch
+
+    def test_refreshes_an_asset_that_is_already_there(self):
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            asset = os.path.join(tmp, "wiz_live.py")
+            with open(asset, "w") as handle:
+                handle.write("old\n")
+            with patch.object(wiz, "_fetch_url",
+                              side_effect=self._fetch({"wiz_live.py": "new = 1\n"})):
+                updates = wiz._optional_live_updates(cli, "main")
+        self.assertEqual(updates, [(asset, "new = 1\n", False)])
+
+    def test_does_not_create_an_asset_that_is_absent(self):
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            with patch.object(wiz, "_fetch_url",
+                              side_effect=self._fetch({"wiz_live.py": "x = 1\n"})):
+                self.assertEqual(wiz._optional_live_updates(cli, "main"), [])
+
+    def test_an_asset_missing_from_the_release_is_tolerated(self):
+        def fetch(url):
+            raise HTTPError(url, 404, "Not Found", None, None)
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            with open(os.path.join(tmp, "wiz_live.py"), "w") as handle:
+                handle.write("old\n")
+            with patch.object(wiz, "_fetch_url", side_effect=fetch):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    updates = wiz._optional_live_updates(cli, "main")
+        self.assertEqual(updates, [])
+        self.assertIn("left", output.getvalue())
+
+    def test_a_broken_python_asset_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            with open(os.path.join(tmp, "wiz_live.py"), "w") as handle:
+                handle.write("old\n")
+            with patch.object(wiz, "_fetch_url",
+                              side_effect=self._fetch({"wiz_live.py": "def (:\n"})):
+                with self.assertRaises(SyntaxError):
+                    wiz._optional_live_updates(cli, "main")
+
+    def test_the_swift_asset_is_not_python_compiled(self):
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            with open(os.path.join(tmp, "wiz_tap.swift"), "w") as handle:
+                handle.write("// old\n")
+            with patch.object(wiz, "_fetch_url",
+                              side_effect=self._fetch({"wiz_tap.swift": "// new\n"})):
+                updates = wiz._optional_live_updates(cli, "main")
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0][1], "// new\n")
+
+    def test_update_refreshes_the_asset_next_to_the_cli(self):
+        remote_source = 'VERSION = "%s"\n' % AHEAD_VERSION
+        remote_project = '[project]\nversion = "%s"\n' % AHEAD_VERSION
+        remote_skill = "---\nname: wiz-lan-control\nversion: 9.9.9\n---\n"
+        fresh_live = 'LIVE_VERSION = "9.9.9"\n'
+
+        def fetch(url):
+            if url.endswith("/wiz.py"):
+                return remote_source
+            if url.endswith("/pyproject.toml"):
+                return remote_project
+            if url.endswith("/skills/wiz/SKILL.md"):
+                return remote_skill
+            if url.endswith("/wiz_live.py"):
+                return fresh_live
+            raise AssertionError(url)
+
+        with TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "wiz")
+            asset = os.path.join(tmp, "wiz_live.py")
+            with open(asset, "w") as handle:
+                handle.write("old\n")
+            with patch.object(wiz, "_fetch_url", side_effect=fetch):
+                with patch.object(wiz, "_update_targets", return_value=[cli]):
+                    with patch.object(wiz, "_skill_paths", return_value=[]):
+                        result = wiz.cmd_update(["--ref", "release-test"])
+            self.assertEqual(result, 0)
+            with open(asset) as handle:
+                self.assertEqual(handle.read(), fresh_live)
+            with open(cli) as handle:
+                self.assertEqual(handle.read(), remote_source)
 
 
 if __name__ == "__main__":
