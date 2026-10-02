@@ -214,10 +214,14 @@ class DispatcherTests(unittest.TestCase):
 
 
 class RestoreParamsTests(unittest.TestCase):
-    def test_off_light_needs_only_state(self):
-        self.assertEqual(wiz_live.restore_params({"state": False, "dimming": 100,
-                                                  "temp": 2700, "sceneId": 11}),
-                         [{"state": False}])
+    def test_off_light_keeps_its_brightness(self):
+        # The bulb stores brightness while dark, so restore it too; only the
+        # conflicting modes are stripped.
+        candidates = wiz_live.restore_params({"state": False, "dimming": 100,
+                                              "temp": 2700, "sceneId": 11,
+                                              "r": 1, "g": 2, "b": 3})
+        self.assertEqual(candidates[0], {"state": False, "dimming": 100,
+                                         "sceneId": 11})
 
     def test_missing_snapshot_turns_the_light_off(self):
         self.assertEqual(wiz_live.restore_params({}), [{"state": False}])
