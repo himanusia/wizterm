@@ -65,7 +65,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-VERSION = "0.12.5"
+VERSION = "0.12.6"
 STATE_VERSION = 2
 PORT = 38899
 CONF_DIR = os.path.expanduser("~/.config/wiz")
