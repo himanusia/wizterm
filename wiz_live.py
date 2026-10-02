@@ -52,7 +52,7 @@ import threading
 import time
 import wave
 
-LIVE_VERSION = "0.2.3"
+LIVE_VERSION = "0.2.4"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
