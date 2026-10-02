@@ -1,7 +1,7 @@
 ---
 name: wiz-lan-control
 description: "Control Philips WiZ smart lights on the local network via the wiz CLI: status, on/off, brightness, presets, RGB, ambience, names, discovery, plus optional audio-reactive shows, song detection and meme effects. Use for any WiZ light request."
-version: 1.9.0
+version: 2.0.0
 category: smart-home
 ---
 
@@ -160,23 +160,45 @@ Audio-reactive shows are optional: `wiz.py` stays dependency-free and imports
 `wiz_live.py` only for these words as the first argument:
 
 ```bash
+wiz listen on [@target]            # start: tap system audio, lights follow
+wiz listen                         # status: running? what song? which lights?
+wiz listen off                     # stop and restore the previous light state
+```
+
+Configuration is on/off only. The daemon taps system audio (Spotify included),
+drives the lights from it, identifies the track roughly every 25 s, and switches
+to the matching show when it recognises a known meme. State lives in
+`~/.config/wiz/listen.json`, `listen.pid`, `listen-state.json` and `listen.log`.
+
+Manual, one-off commands:
+
+```bash
 wiz shows                          # list modes (no audio needed)
 wiz live [@target]                 # microphone, default 'bands' mode
 wiz live @lamp --mode spectrum     # bands|energy|rainbow|pulse|strobe|spectrum|multi
 wiz live @lamp --file song.mp3          # repeatable, perfectly synced demo
-wiz live @lamp --source system     # system audio via a loopback input device
+wiz live @lamp --source system     # system audio
 wiz detect [@target] --seconds 8   # identify the playing song
 wiz detect [@target] --file song.mp3
 wiz detect [@target] --apply       # identify, then start the matching show
 wiz caramelldansen [@target]       # two colours swapping on every half beat
 ```
 
+Capture: on macOS 14.4+ `wiz_tap.swift` is compiled once into
+`~/.config/wiz/bin/wiz-tap` and taps system audio with `CATapDescription` plus
+`AudioHardwareCreateProcessTap`, exactly like Atoll. No BlackHole or other
+loopback driver. It needs `swiftc`, and macOS asks for "System Audio Recording"
+permission for the terminal on first use. Elsewhere `--source system` falls back
+to a loopback input device.
+
 Useful flags: `--fps` (default 12; keep at or below ~15), `--sensitivity`,
 `--brightness-boost`, `--duration`, `--dry-run` (prints frames, sends no UDP),
 `--list-devices`.
 
 Extras: `numpy` + `sounddevice` for capture and FFT, `shazamio` for song
-identification. Install with `pipx install "wizterm[live,recognize]"`, or run
+identification. If the interpreter running `wiz` lacks them, put them in
+`~/.config/wiz/venv` and the live commands re-exec into that venv
+automatically. Install with `pipx install "wizterm[live,recognize]"`, or run
 ad-hoc with `uv run --with numpy --with sounddevice wiz_live.py`. Without them
 the CLI prints the exact install line instead of failing obscurely.
 
