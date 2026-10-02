@@ -159,7 +159,7 @@ wiz add <ip>                manually register a light by IP
 wiz shows                   list the optional audio-reactive shows
 wiz live [target]           audio-reactive visualizer (needs the live extra)
 wiz detect [target]         identify the playing song (needs the recognize extra)
-wiz caramelldansen [target] the meme: two colours swapping on every half beat
+wiz caramelldansen [target] the meme: two colours swapping once per beat, 165 BPM
 ```
 
 ### Targeting one light
@@ -352,7 +352,7 @@ wiz caramelldansen @lamp --dry-run         # print frames, send nothing
 | `strobe` | white flash on every detected beat |
 | `spectrum` | colour hint plus an aggressive brightness pulse |
 | `multi` | one frequency band per light, for two or more bulbs |
-| `caramelldansen` | two colours swapping on every half beat |
+| `caramelldansen` | two colours swapping once per beat, 165 BPM |
 
 Useful flags: `--fps` (frames sent per second, default 12), `--sensitivity`,
 `--brightness-boost`, `--duration`, `--dry-run`, `--list-devices`.

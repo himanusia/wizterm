@@ -52,7 +52,7 @@ import threading
 import time
 import wave
 
-LIVE_VERSION = "0.2.4"
+LIVE_VERSION = "0.2.5"
 
 # The core CLI injects itself here so this module reuses its UDP transport,
 # registry and target resolution instead of re-implementing them.
@@ -85,6 +85,10 @@ DEFAULT_FPS = 12.0
 CARAMELLDANSEN_BPM = 165.0
 CARAMELLDANSEN_COLORS = ("ff2e88", "00e5ff")
 CARAMELLDANSEN_FPS = 15.0
+# The meme swaps pose once per beat. Two swaps per beat is a strobe, not a
+# dance, and it is past the point where a room full of people wants to look at
+# it.
+CARAMELLDANSEN_SWAPS = 1
 
 MICS = ("mic", "system", "file")
 
@@ -267,12 +271,14 @@ CARAMELLDANSEN_FLOOR = 25
 
 
 def caramelldansen_frame(moment, bpm=CARAMELLDANSEN_BPM, colors=CARAMELLDANSEN_COLORS,
-                         swaps_per_beat=2, dim_floor=CARAMELLDANSEN_FLOOR, dim_peak=100):
+                         swaps_per_beat=CARAMELLDANSEN_SWAPS,
+                         dim_floor=CARAMELLDANSEN_FLOOR, dim_peak=100):
     """Deterministic two-colour bounce state at ``moment`` seconds.
 
-    The colour swaps every ``1 / swaps_per_beat`` of a beat and the brightness
-    decays from the swap until the next one, which is the light equivalent of
-    the meme's hop. Returns ``(rgb, dimming)``.
+    The colour swaps ``swaps_per_beat`` times per beat and the brightness decays
+    from the swap until the next one, which is the light equivalent of the
+    meme's hop. One swap per beat is the meme; two is a strobe. Returns
+    ``(rgb, dimming)``.
     """
     palette = [parse_color(value) if isinstance(value, str) else tuple(value)
                for value in colors]
@@ -739,10 +745,10 @@ def _render(records, frames_iter, options, duration=None):
                 if send_frame(record, rgb, dimming):
                     last_sent[record.get("id")] = (rgb, dimming)
         chapter += 1
-        if not options.dry_run:
-            owed = started + chapter * interval - time.monotonic()
-            if owed > 0:
-                time.sleep(owed)
+        # Pace even a dry run, so the printed frames carry real timings.
+        owed = started + chapter * interval - time.monotonic()
+        if owed > 0:
+            time.sleep(owed)
     return chapter
 
 
@@ -800,14 +806,18 @@ def _analysis_frames(blocks, mode, options, records):
 
 
 def _caramelldansen_frames(options, records, palette):
-    interval = 1.0 / max(options.fps, 1.0)
-    moment = 0.0
+    """Frames whose beat clock is the wall clock, not the frame counter.
+
+    A slow light then drops frames instead of playing the whole thing in slow
+    motion, which is what pulled the effect out of time with the music.
+    """
+    started = time.monotonic()
     while True:
+        moment = time.monotonic() - started
         rgb, dimming = caramelldansen_frame(
             moment, bpm=options.bpm, colors=palette,
-            swaps_per_beat=options.rate_multiplier)
+            swaps_per_beat=options.swaps_per_beat)
         yield moment, [(rgb, dimming) for _record in records]
-        moment += interval
 
 
 def cmd_live(argv):
@@ -1407,8 +1417,10 @@ def _caramelldansen_parser():
     parser.add_argument("--bpm", type=float, default=CARAMELLDANSEN_BPM)
     parser.add_argument("--colors", default=",".join(CARAMELLDANSEN_COLORS),
                         help="comma-separated hex colours, default %(default)s")
-    parser.add_argument("--rate-multiplier", dest="rate_multiplier", type=int, default=2,
-                        help="colour swaps per beat (default %(default)s)")
+    parser.add_argument("--swaps-per-beat", dest="swaps_per_beat", type=int,
+                        default=CARAMELLDANSEN_SWAPS,
+                        help="colour swaps per beat: 1 is the meme, 2 is a strobe "
+                             "(default %(default)s)")
     return parser
 
 
